@@ -1,4 +1,4 @@
-use flashdb_for_rust::{storage::StorageRegion, StorageRegionConfig};
+use flashdb_for_rust::{StorageRegionConfig, storage::StorageRegion};
 
 #[test]
 fn rejects_invalid_region() {

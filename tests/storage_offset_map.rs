@@ -1,6 +1,6 @@
 use flashdb_for_rust::{
-    storage::{MockFlash, NorFlashRegion, StorageRegion},
     StorageRegionConfig,
+    storage::{MockFlash, NorFlashRegion, StorageRegion},
 };
 
 #[test]

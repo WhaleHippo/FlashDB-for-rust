@@ -16,7 +16,7 @@ impl StatusScheme {
                 "status scheme parameters must be non-zero",
             ));
         }
-        if write_granularity_bits != 1 && write_granularity_bits % 8 != 0 {
+        if write_granularity_bits != 1 && !write_granularity_bits.is_multiple_of(8) {
             return Err(Error::InvariantViolation(
                 "write granularity must be 1 bit or a whole number of bytes",
             ));
@@ -53,9 +53,9 @@ impl StatusScheme {
 
     pub const fn table_len(&self) -> usize {
         if self.write_granularity_bits == 1 {
-            (self.state_count + 7) / 8
+            self.state_count.div_ceil(8)
         } else {
-            ((self.state_count - 1) * self.write_granularity_bits + 7) / 8
+            ((self.state_count - 1) * self.write_granularity_bits).div_ceil(8)
         }
     }
 
@@ -130,7 +130,7 @@ impl StatusScheme {
             return Err(Error::Decode(DecodeError::BufferTooShort));
         }
         if self.write_granularity_bits == 1 {
-            out[0] = if state_index % 8 == 0 {
+            out[0] = if state_index.is_multiple_of(8) {
                 WRITTEN_BYTE
             } else {
                 0xFFu8 >> (state_index % 8)

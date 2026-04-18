@@ -1,6 +1,6 @@
 use crate::error::{DecodeError, Error, Result};
 use crate::layout::align::align_up;
-use crate::layout::common::{DATA_UNUSED_SENTINEL, ERASED_BYTE, TSL_STATUS_COUNT, TS_SECTOR_MAGIC};
+use crate::layout::common::{DATA_UNUSED_SENTINEL, ERASED_BYTE, TS_SECTOR_MAGIC, TSL_STATUS_COUNT};
 use crate::layout::status::StatusScheme;
 
 pub const TSL_PRE_WRITE: usize = 1;
@@ -52,11 +52,7 @@ impl TsLayout {
     }
 
     fn native_time_align(&self) -> usize {
-        if self.time_bytes >= 8 {
-            8
-        } else {
-            4
-        }
+        if self.time_bytes >= 8 { 8 } else { 4 }
     }
 
     fn aligned_u32_field_len(&self) -> Result<usize> {
@@ -153,7 +149,7 @@ impl TsLayout {
             TsBlobMode::Variable => Err(Error::InvariantViolation(
                 "fixed blob helpers require fixed blob mode",
             )),
-            TsBlobMode::Fixed(len) if len == 0 => Err(Error::InvariantViolation(
+            TsBlobMode::Fixed(0) => Err(Error::InvariantViolation(
                 "fixed blob mode must be non-zero",
             )),
             TsBlobMode::Fixed(len) => align_up(len as usize, self.write_unit_bytes()),

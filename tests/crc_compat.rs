@@ -1,4 +1,4 @@
-use flashdb_for_rust::crc::{crc32, crc_chain, crc_with_ff_padding};
+use flashdb_for_rust::crc::{crc_chain, crc_with_ff_padding, crc32};
 
 #[test]
 fn crc32_known_vector_matches_standard() {

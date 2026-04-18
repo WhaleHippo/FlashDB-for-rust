@@ -1,9 +1,9 @@
+use flashdb_for_rust::StorageRegionConfig;
 use flashdb_for_rust::layout::common::{
     KV_STATUS_COUNT, SECTOR_DIRTY_STATUS_COUNT, SECTOR_STORE_STATUS_COUNT, TSL_STATUS_COUNT,
 };
 use flashdb_for_rust::layout::status::{StatusScheme, StatusTableBuf};
 use flashdb_for_rust::storage::{MockFlash, NorFlashRegion, StorageRegion};
-use flashdb_for_rust::StorageRegionConfig;
 
 #[test]
 fn roundtrips_bit_granularity_status_table() {

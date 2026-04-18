@@ -78,7 +78,7 @@ impl<const N: usize, const WRITE_SIZE: usize, const ERASE_SIZE: usize> NorFlash
 
     fn write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), Self::Error> {
         let offset = offset as usize;
-        if offset % WRITE_SIZE != 0 || bytes.len() % WRITE_SIZE != 0 {
+        if !offset.is_multiple_of(WRITE_SIZE) || !bytes.len().is_multiple_of(WRITE_SIZE) {
             return Err(MockFlashError::NotAligned);
         }
         let end = offset.saturating_add(bytes.len());
@@ -100,7 +100,7 @@ impl<const N: usize, const WRITE_SIZE: usize, const ERASE_SIZE: usize> NorFlash
     fn erase(&mut self, from: u32, to: u32) -> Result<(), Self::Error> {
         let from = from as usize;
         let to = to as usize;
-        if from % ERASE_SIZE != 0 || to % ERASE_SIZE != 0 || from > to {
+        if !from.is_multiple_of(ERASE_SIZE) || !to.is_multiple_of(ERASE_SIZE) || from > to {
             return Err(MockFlashError::NotAligned);
         }
         if to > N {

@@ -1,6 +1,6 @@
 use flashdb_for_rust::{
-    storage::{MockFlash, NorFlashRegion, StorageRegion},
     StorageRegionConfig,
+    storage::{MockFlash, NorFlashRegion, StorageRegion},
 };
 
 #[test]
@@ -46,9 +46,11 @@ fn aligned_write_preserves_nor_semantics() {
     storage
         .write_aligned(0, &[0x00, 0x00, 0x00], &mut scratch)
         .unwrap();
-    assert!(storage
-        .write_aligned(0, &[0xFF, 0x00, 0x00], &mut scratch)
-        .is_err());
+    assert!(
+        storage
+            .write_aligned(0, &[0xFF, 0x00, 0x00], &mut scratch)
+            .is_err()
+    );
 }
 
 #[test]
@@ -58,7 +60,9 @@ fn aligned_write_rejects_unaligned_offsets() {
     let mut storage = NorFlashRegion::new(flash, region).unwrap();
     let mut scratch = [0u8; 8];
 
-    assert!(storage
-        .write_aligned(3, &[0x11, 0x22], &mut scratch)
-        .is_err());
+    assert!(
+        storage
+            .write_aligned(3, &[0x11, 0x22], &mut scratch)
+            .is_err()
+    );
 }

@@ -28,6 +28,10 @@ impl StorageRegion {
         self.len
     }
 
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub const fn erase_size(&self) -> u32 {
         self.erase_size
     }
@@ -66,7 +70,7 @@ impl StorageRegion {
     }
 
     pub fn require_write_aligned(&self, value: u32) -> Result<u32> {
-        if value % self.write_size != 0 {
+        if !value.is_multiple_of(self.write_size) {
             return Err(Error::Alignment(AlignmentError::UnalignedValue {
                 value,
                 align: self.write_size,

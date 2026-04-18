@@ -1,7 +1,7 @@
 use flashdb_for_rust::crc::crc_chain;
 use flashdb_for_rust::layout::common::{DATA_UNUSED_SENTINEL, KV_RECORD_MAGIC, KV_SECTOR_MAGIC};
 use flashdb_for_rust::layout::kv::{
-    KvLayout, KvRecordHeader, KvSectorHeader, KV_PRE_WRITE, SECTOR_DIRTY_FALSE, SECTOR_STORE_EMPTY,
+    KV_PRE_WRITE, KvLayout, KvRecordHeader, KvSectorHeader, SECTOR_DIRTY_FALSE, SECTOR_STORE_EMPTY,
 };
 
 #[test]

@@ -34,13 +34,13 @@ impl StorageRegionConfig {
         if self.erase_size == 0 || self.write_size == 0 {
             return Err(Error::Alignment(AlignmentError::ZeroAlignment));
         }
-        if self.start % self.erase_size != 0 {
+        if !self.start.is_multiple_of(self.erase_size) {
             return Err(Error::InvariantViolation("start must align to erase_size"));
         }
-        if self.start % self.write_size != 0 {
+        if !self.start.is_multiple_of(self.write_size) {
             return Err(Error::InvariantViolation("start must align to write_size"));
         }
-        if self.len % self.erase_size != 0 {
+        if !self.len.is_multiple_of(self.erase_size) {
             return Err(Error::InvariantViolation("len must align to erase_size"));
         }
         if self.len < self.erase_size.saturating_mul(2) {

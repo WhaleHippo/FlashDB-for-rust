@@ -80,6 +80,10 @@ impl KvValueLocator {
     pub const fn len(&self) -> u32 {
         self.0.len()
     }
+
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 impl From<KvValueLocator> for BlobLocator {
@@ -115,6 +119,10 @@ impl TsPayloadLocator {
 
     pub const fn len(&self) -> u32 {
         self.0.len()
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 

@@ -307,7 +307,7 @@ impl KvRecordHeader {
         if header.total_len < minimum_total_len {
             return Err(Error::Decode(DecodeError::InvalidLength));
         }
-        if header.total_len as usize % layout.write_unit_bytes() != 0 {
+        if !(header.total_len as usize).is_multiple_of(layout.write_unit_bytes()) {
             return Err(Error::Decode(DecodeError::InvalidLength));
         }
         Ok(header)
