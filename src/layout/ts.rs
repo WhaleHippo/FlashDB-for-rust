@@ -5,7 +5,9 @@ use crate::layout::status::StatusScheme;
 
 pub const TSL_PRE_WRITE: usize = 1;
 pub const TSL_WRITE: usize = 2;
+pub const TSL_USER_STATUS1: usize = 3;
 pub const TSL_DELETED: usize = 4;
+pub const TSL_USER_STATUS2: usize = 5;
 pub const SECTOR_STORE_EMPTY: usize = 1;
 pub const SECTOR_STORE_USING: usize = 2;
 pub const SECTOR_STORE_FULL: usize = 3;

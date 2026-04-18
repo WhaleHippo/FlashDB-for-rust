@@ -217,6 +217,35 @@ where
             .count())
     }
 
+    pub fn set_status(&mut self, timestamp: u64, status: usize) -> Result<bool, F::Error> {
+        self.validate_status_target(status)?;
+        let Some((index_offset, current_status)) =
+            self.find_index_offset_for_timestamp(timestamp)?
+        else {
+            return Ok(false);
+        };
+        if status < current_status {
+            return Err(Error::InvariantViolation(
+                "TSDB status transitions must be monotonic",
+            ));
+        }
+        if status == current_status {
+            return Ok(true);
+        }
+        let mut scratch = vec![0u8; self.region().write_size() as usize];
+        self.layout.tsl_status_scheme().write_transition(
+            &mut self.storage,
+            index_offset,
+            status,
+            &mut scratch,
+        )?;
+        Ok(true)
+    }
+
+    pub fn clean(&mut self) -> Result<(), F::Error> {
+        self.format()
+    }
+
     fn snapshot_records(&mut self) -> Result<Vec<TsOwnedRecord>, F::Error> {
         let mut records = Vec::new();
         for sector_index in 0..self.region().sector_count() {
@@ -261,7 +290,7 @@ where
             if header.status == TSL_PRE_WRITE || header.status == 0 {
                 break;
             }
-            if header.status == TSL_WRITE {
+            if header.status != TSL_PRE_WRITE && header.status != 0 {
                 let log_addr = header.log_addr.ok_or(Error::CorruptedHeader)?;
                 let log_len = header.log_len.ok_or(Error::CorruptedHeader)?;
                 let log_end = log_addr.checked_add(log_len).ok_or(Error::OutOfBounds)?;
@@ -281,6 +310,61 @@ where
                 .ok_or(Error::OutOfBounds)?;
         }
 
+        Ok(())
+    }
+
+    fn find_index_offset_for_timestamp(
+        &mut self,
+        timestamp: u64,
+    ) -> Result<Option<(u32, usize)>, F::Error> {
+        let index_len = self
+            .layout
+            .index_header_len(self.mode)
+            .map_err(map_core_error::<F::Error>)? as u32;
+        let mut index_buf = vec![0u8; index_len as usize];
+
+        for sector_index in 0..self.region().sector_count() {
+            let sector = self.sectors[sector_index as usize];
+            if sector.entry_count == 0 {
+                continue;
+            }
+            let sector_base = self
+                .region()
+                .sector_start(sector_index)
+                .map_err(map_core_error::<F::Error>)?;
+            let mut index_offset = sector_base
+                .checked_add(
+                    self.layout
+                        .sector_header_len()
+                        .map_err(map_core_error::<F::Error>)? as u32,
+                )
+                .ok_or(Error::OutOfBounds)?;
+            while index_offset < sector.empty_index_offset {
+                self.storage.read(index_offset, &mut index_buf)?;
+                let header = TsIndexHeader::decode(&self.layout, self.mode, &index_buf)
+                    .map_err(map_core_error::<F::Error>)?;
+                if header.status == 0 || header.status == TSL_PRE_WRITE {
+                    break;
+                }
+                if header.timestamp == timestamp {
+                    return Ok(Some((index_offset, header.status)));
+                }
+                index_offset = index_offset
+                    .checked_add(index_len)
+                    .ok_or(Error::OutOfBounds)?;
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn validate_status_target(&self, status: usize) -> Result<(), F::Error> {
+        if status == 0
+            || status == TSL_PRE_WRITE
+            || status >= self.layout.tsl_status_scheme().state_count()
+        {
+            return Err(Error::InvariantViolation("invalid TSDB target status"));
+        }
         Ok(())
     }
 
