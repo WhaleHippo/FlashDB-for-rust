@@ -1,6 +1,6 @@
-# Testing, Validation, and Embassy Integration Plan
+# Testing, Validation, and Rust Integration Plan
 
-> 목적: FlashDB-for-embassy를 실제로 신뢰할 수 있도록 host-side 시뮬레이션, crash test, hardware smoke test, Embassy 예제까지 포함한 검증 계획을 정의한다.
+> 목적: FlashDB-for-rust를 실제로 신뢰할 수 있도록 host-side 시뮬레이션, crash test, hardware smoke test, Rust 예제까지 포함한 검증 계획을 정의한다.
 
 ## 1. 목표
 
@@ -39,7 +39,7 @@ FlashDB 계열 저장소는 아래를 반드시 검증해야 한다.
 
 ### Layer 4. hardware smoke tests
 대상:
-- STM32F302 + Embassy
+- STM32F302 + Rust
 - 실제 flash backend 위 mount/set/get/append
 
 ## 3. 예상 파일
@@ -153,7 +153,7 @@ mock 요구사항:
 
 목표는 “어떤 시퀀스 후에도 mount가 깨지지 않는가”를 보는 것이다.
 
-### Phase 9. Embassy example 작성
+### Phase 9. Rust example 작성
 
 목표:
 - 실제 사용자가 따라할 수 있는 최소 예제를 제공한다.
@@ -219,7 +219,7 @@ mock 요구사항:
 - `~/Desktop/FlashDB/tests/fdb_tsdb_tc.c`
 - `~/Desktop/FlashDB/src/fdb_file.c`
 
-Embassy/환경 참고:
+Rust/환경 참고:
 - STM32F302 대상 flash backend 문서
 - `embedded-storage` trait 문서
 - 필요 시 probe-rs / cargo runner 설정
@@ -240,7 +240,7 @@ Embassy/환경 참고:
 - KVDB integration/recovery/GC tests 통과
 - TSDB append/query tests 통과
 - file-backed reboot simulation 통과
-- 최소 1개 Embassy 예제 제공
+- 최소 1개 Rust 예제 제공
 - STM32F302 하드웨어 smoke test 절차가 문서화됨
 
 ## 8. 후속 권장 작업

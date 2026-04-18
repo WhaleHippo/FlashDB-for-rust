@@ -1,4 +1,4 @@
-use flashdb_for_embassy::layout::align::{
+use flashdb_for_rust::layout::align::{
     align_down, align_to_write_size, align_up, aligned_tail_size,
 };
 

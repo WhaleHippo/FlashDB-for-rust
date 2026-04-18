@@ -1,4 +1,4 @@
-use flashdb_for_embassy::layout::common::{
+use flashdb_for_rust::layout::common::{
     DATA_UNUSED_SENTINEL, ERASED_BYTE, FAILED_ADDR, KV_RECORD_MAGIC, KV_SECTOR_MAGIC,
     SECTOR_DIRTY_STATUS_COUNT, SECTOR_STORE_STATUS_COUNT, TSL_STATUS_COUNT, TS_SECTOR_MAGIC,
     WRITTEN_BYTE,

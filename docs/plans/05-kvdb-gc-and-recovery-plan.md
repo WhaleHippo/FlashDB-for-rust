@@ -250,4 +250,4 @@ GC의 핵심은 무엇이 살아 있는지 판별하는 것이다.
 ## 8. 다음 문서
 
 - `06-tsdb-plan.md`
-- `07-testing-validation-and-embassy-integration.md`
+- `07-testing-validation-and-rust-integration.md`

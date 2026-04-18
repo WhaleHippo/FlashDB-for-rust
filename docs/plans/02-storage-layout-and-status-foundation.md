@@ -1,6 +1,6 @@
 # Storage, Layout, and Status Foundation Plan
 
-> 목적: FlashDB-for-embassy의 가장 중요한 공통 기반인 storage region, 정렬 규칙, 상태 테이블, 온플래시 header codec을 먼저 안정화한다.
+> 목적: FlashDB-for-rust의 가장 중요한 공통 기반인 storage region, 정렬 규칙, 상태 테이블, 온플래시 header codec을 먼저 안정화한다.
 
 ## 1. 목표
 

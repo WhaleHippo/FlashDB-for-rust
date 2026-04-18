@@ -1,6 +1,6 @@
-# FlashDB-for-embassy Top-Down Roadmap
+# FlashDB-for-rust Top-Down Roadmap
 
-> 목적: FlashDB 개념을 Rust + Embassy 환경에 맞게 재구현하기 위한 전체 구현 순서를 고정하고, 이후 개별 task가 흔들리지 않도록 상위 방향을 문서화한다.
+> 목적: FlashDB 개념을 Rust 환경에 맞게 재구현하기 위한 전체 구현 순서를 고정하고, 이후 개별 task가 흔들리지 않도록 상위 방향을 문서화한다.
 
 ## 1. 최종 목표
 
@@ -13,7 +13,7 @@
    - status table 기반 상태 전이
    - append-only 기록
    - boot-time recovery
-3. Rust/Embassy답게 더 안전하고 확장 가능한 구조를 제공한다.
+3. Rust답게 더 안전하고 확장 가능한 구조를 제공한다.
    - 명시적 codec
    - 명확한 error model
    - Blob/Locator 분리
@@ -151,7 +151,7 @@
 - RAM mock flash
 - file-backed flash simulator
 - forced reboot / interrupted write test
-- Embassy example
+- Rust example
 - STM32F302 hardware smoke test
 
 완료 기준:
@@ -170,12 +170,12 @@
 7. KVDB GC/recovery 구현
 8. TSDB 구현
 9. simulator/test harness 강화
-10. Embassy 예제와 문서 보완
+10. Rust 예제와 문서 보완
 
 ## 5. 제안 파일/디렉터리 구조
 
 ```text
-FlashDB-for-embassy/
+FlashDB-for-rust/
 ├─ src/
 │  ├─ lib.rs
 │  ├─ error.rs
@@ -275,7 +275,7 @@ FlashDB-for-embassy/
 
 ### 구현 중 수시 참고
 - `embedded-storage` trait 문서
-- Embassy synchronization 관련 문서
+- Rust synchronization 관련 문서
 - 현재 보드 대상 flash write/erase granularity 정보
 
 ## 8. 각 단계 완료 시 남겨야 할 기록

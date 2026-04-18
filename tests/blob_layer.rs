@@ -1,9 +1,9 @@
-use flashdb_for_embassy::blob::{
+use flashdb_for_rust::blob::{
     BlobBuf, BlobLocator, BlobReader, BlobRef, KvValueLocator, TsPayloadLocator,
 };
-use flashdb_for_embassy::config::StorageRegionConfig;
-use flashdb_for_embassy::error::Error;
-use flashdb_for_embassy::storage::{MockFlash, NorFlashRegion, StorageRegion};
+use flashdb_for_rust::config::StorageRegionConfig;
+use flashdb_for_rust::error::Error;
+use flashdb_for_rust::storage::{MockFlash, NorFlashRegion, StorageRegion};
 
 fn region() -> StorageRegion {
     StorageRegion::new(StorageRegionConfig::new(0, 4096, 1024, 4)).unwrap()

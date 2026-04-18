@@ -1,10 +1,10 @@
 [package]
-name = "flashdb-for-embassy"
+name = "flashdb-for-rust"
 version = "0.1.0"
 edition = "2021"
-description = "FlashDB-inspired storage primitives for Rust + Embassy"
+description = "FlashDB-inspired storage primitives for Rust"
 license = "MIT"
-repository = "https://example.invalid/flashdb-for-embassy"
+repository = "https://example.invalid/flashdb-for-rust"
 
 [features]
 default = []

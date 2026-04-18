@@ -1,6 +1,6 @@
 # Blob and Codec Layer Plan
 
-> 목적: 원본 `fdb_blob`을 Rust/Embassy에 맞는 Blob/Locator/Reader/Codec 구조로 재설계하고, 이후 KVDB/TSDB가 공통 payload 계층을 사용할 수 있게 만든다.
+> 목적: 원본 `fdb_blob`을 Rust에 맞는 Blob/Locator/Reader/Codec 구조로 재설계하고, 이후 KVDB/TSDB가 공통 payload 계층을 사용할 수 있게 만든다.
 
 ## 1. 목표
 

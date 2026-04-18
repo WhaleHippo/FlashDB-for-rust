@@ -1,4 +1,4 @@
-use flashdb_for_embassy::blob::{DecodeFromBytes, EncodeToBytes};
+use flashdb_for_rust::blob::{DecodeFromBytes, EncodeToBytes};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SamplePayload {

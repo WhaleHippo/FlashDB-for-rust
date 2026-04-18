@@ -1,6 +1,6 @@
 # TSDB Plan
 
-> 목적: FlashDB-for-embassy의 TSDB를 구현하고, time-series append/query/reverse iteration/rollover를 안정적으로 제공한다.
+> 목적: FlashDB-for-rust의 TSDB를 구현하고, time-series append/query/reverse iteration/rollover를 안정적으로 제공한다.
 
 ## 1. 목표
 
@@ -255,4 +255,4 @@ mount logic에 대한 독립 테스트가 필요하다.
 
 ## 8. 다음 문서
 
-- `07-testing-validation-and-embassy-integration.md`
+- `07-testing-validation-and-rust-integration.md`

@@ -1,6 +1,6 @@
-# FlashDB-for-embassy 구현 계획 인덱스
+# FlashDB-for-rust 구현 계획 인덱스
 
-이 폴더는 FlashDB-for-embassy를 실제로 구현하기 위한 top-down 계획 문서 모음이다.
+이 폴더는 FlashDB-for-rust를 실제로 구현하기 위한 top-down 계획 문서 모음이다.
 각 문서는 독립적으로 읽을 수 있게 작성했지만, 실제 작업은 아래 순서를 기준으로 진행하는 것을 권장한다.
 
 ## 권장 읽기/실행 순서
@@ -19,8 +19,8 @@
    - KVDB GC, recovery, cache 고도화
 7. `06-tsdb-plan.md`
    - TSDB 구현 순서
-8. `07-testing-validation-and-embassy-integration.md`
-   - host simulation, crash test, hardware validation, Embassy 예제
+8. `07-testing-validation-and-rust-integration.md`
+   - host simulation, crash test, hardware validation, Rust 예제
 
 ## 문서 사용 원칙
 
@@ -66,7 +66,7 @@
   - KV recovery/GC/iterator: `src/fdb_kvdb.c`
 - `06-tsdb-plan.md`
   - TS append/query/mount: `src/fdb_tsdb.c`
-- `07-testing-validation-and-embassy-integration.md`
+- `07-testing-validation-and-rust-integration.md`
   - 원본 테스트/시뮬레이션: `tests/fdb_kvdb_tc.c`, `tests/fdb_tsdb_tc.c`, `src/fdb_file.c`
 
 ## 진행 관리 권장 방식

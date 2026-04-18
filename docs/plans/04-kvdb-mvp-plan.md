@@ -1,6 +1,6 @@
 # KVDB MVP Plan
 
-> 목적: FlashDB-for-embassy의 첫 번째 실사용 가능한 milestone으로 KVDB MVP를 구현한다.
+> 목적: FlashDB-for-rust의 첫 번째 실사용 가능한 milestone으로 KVDB MVP를 구현한다.
 
 ## 1. 목표
 

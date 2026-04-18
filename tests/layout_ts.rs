@@ -1,5 +1,5 @@
-use flashdb_for_embassy::layout::common::{DATA_UNUSED_SENTINEL, TS_SECTOR_MAGIC};
-use flashdb_for_embassy::layout::ts::{
+use flashdb_for_rust::layout::common::{DATA_UNUSED_SENTINEL, TS_SECTOR_MAGIC};
+use flashdb_for_rust::layout::ts::{
     TsBlobMode, TsEndInfo, TsIndexHeader, TsLayout, TsSectorHeader, TSL_PRE_WRITE,
 };
 

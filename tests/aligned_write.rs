@@ -1,4 +1,4 @@
-use flashdb_for_embassy::{
+use flashdb_for_rust::{
     storage::{MockFlash, NorFlashRegion, StorageRegion},
     StorageRegionConfig,
 };

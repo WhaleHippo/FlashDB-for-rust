@@ -1,6 +1,6 @@
-use flashdb_for_embassy::crc::crc_chain;
-use flashdb_for_embassy::layout::common::{DATA_UNUSED_SENTINEL, KV_RECORD_MAGIC, KV_SECTOR_MAGIC};
-use flashdb_for_embassy::layout::kv::{
+use flashdb_for_rust::crc::crc_chain;
+use flashdb_for_rust::layout::common::{DATA_UNUSED_SENTINEL, KV_RECORD_MAGIC, KV_SECTOR_MAGIC};
+use flashdb_for_rust::layout::kv::{
     KvLayout, KvRecordHeader, KvSectorHeader, KV_PRE_WRITE, SECTOR_DIRTY_FALSE, SECTOR_STORE_EMPTY,
 };
 
