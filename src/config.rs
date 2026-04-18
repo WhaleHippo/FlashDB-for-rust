@@ -81,6 +81,9 @@ pub struct TsdbConfig {
 impl TsdbConfig {
     pub fn validate(self) -> Result<Self> {
         self.region.validate()?;
+        if matches!(self.blob_mode, BlobMode::Fixed(0)) {
+            return Err(Error::InvariantViolation("fixed blob mode must be non-zero"));
+        }
         Ok(self)
     }
 }
