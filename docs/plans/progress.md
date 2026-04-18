@@ -114,9 +114,12 @@
 - empty -> format -> set -> get
 - overwrite 후 latest-wins lookup
 - set -> delete -> not found -> re-set
+- sector boundary를 넘는 append
+- full region 상태에서 `Error::NoSpace` 반환
 - reboot 후 mount 복구
 - PRE_WRITE tail recovery 후 이전 값 유지 + 재쓰기 가능
 - CRC mismatch tail recovery 후 이전 값 유지 + 재쓰기 가능
+- 손상된 다음 sector header를 mount 후 재초기화하고 재사용 가능
 
 ## 5. plan 04 완료 판단
 

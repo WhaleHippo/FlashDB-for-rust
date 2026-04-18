@@ -62,6 +62,14 @@ fn append_raw_record(
     storage.into_inner()
 }
 
+fn corrupt_bytes(mut flash: TestFlash, offset: u32, bytes: &[u8]) -> TestFlash {
+    let region = StorageRegion::new(test_config().region).unwrap();
+    let mut storage = NorFlashRegion::new(flash, region).unwrap();
+    storage.write(offset, bytes).unwrap();
+    flash = storage.into_inner();
+    flash
+}
+
 #[test]
 fn mount_discards_pre_write_tail_and_keeps_last_good_value() {
     let config = test_config();
@@ -122,4 +130,28 @@ fn mount_discards_crc_mismatched_tail_and_preserves_previous_record() {
     rebooted.set("fresh", b"after-crc-recovery").unwrap();
     let len = rebooted.get_blob_into("fresh", &mut buf).unwrap().unwrap();
     assert_eq!(&buf[..len], b"after-crc-recovery");
+}
+
+#[test]
+fn mount_recovers_from_corrupted_next_sector_header_and_allows_reuse() {
+    let config = test_config();
+    let mut db = KvDb::mount(TestFlash::new(), config).unwrap();
+    db.format().unwrap();
+
+    let filler = [b'x'; 128];
+    db.set("fill", &filler).unwrap();
+
+    let second_sector_base = config.region.erase_size;
+    let magic_offset = second_sector_base + layout().sector_magic_offset().unwrap() as u32;
+    let flash = corrupt_bytes(db.into_flash(), magic_offset, &[0x00, 0x00, 0x00, 0x00]);
+    let mut rebooted = KvDb::mount(flash, config).unwrap();
+
+    let mut buf = [0u8; 176];
+    let len = rebooted.get_blob_into("fill", &mut buf).unwrap().unwrap();
+    assert_eq!(&buf[..len], &filler);
+
+    rebooted.set("next", b"sector-reused").unwrap();
+    let mut small = [0u8; 32];
+    let len = rebooted.get_blob_into("next", &mut small).unwrap().unwrap();
+    assert_eq!(&small[..len], b"sector-reused");
 }

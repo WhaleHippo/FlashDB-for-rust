@@ -1,3 +1,4 @@
+use flashdb_for_rust::error::Error;
 use flashdb_for_rust::kv::KvDb;
 use flashdb_for_rust::storage::MockFlash;
 use flashdb_for_rust::{KvConfig, StorageRegionConfig};
@@ -9,6 +10,14 @@ fn test_config() -> KvConfig {
         region: StorageRegionConfig::new(0, 1024, 256, 4),
         max_key_len: 32,
         max_value_len: 128,
+    }
+}
+
+fn two_sector_config() -> KvConfig {
+    KvConfig {
+        region: StorageRegionConfig::new(0, 512, 256, 4),
+        max_key_len: 8,
+        max_value_len: 176,
     }
 }
 
@@ -70,4 +79,29 @@ fn kv_overwrite_latest_wins_across_reboot() {
     rebooted.set("mode", b"restored").unwrap();
     let len = rebooted.get_blob_into("mode", &mut buf).unwrap().unwrap();
     assert_eq!(&buf[..len], b"restored");
+}
+
+#[test]
+fn kv_crosses_sector_boundary_and_reports_nospace_when_full() {
+    let config = two_sector_config();
+    let mut db = KvDb::mount(TestFlash::new(), config).unwrap();
+    db.format().unwrap();
+
+    let first_value = [b'a'; 176];
+    let second_value = [b'b'; 176];
+
+    db.set("a", &first_value).unwrap();
+    db.set("b", &second_value).unwrap();
+
+    let mut buf = [0u8; 176];
+    let len = db.get_blob_into("a", &mut buf).unwrap().unwrap();
+    assert_eq!(len, first_value.len());
+    assert_eq!(&buf[..len], &first_value);
+
+    let len = db.get_blob_into("b", &mut buf).unwrap().unwrap();
+    assert_eq!(len, second_value.len());
+    assert_eq!(&buf[..len], &second_value);
+
+    let err = db.set("c", b"tail").unwrap_err();
+    assert!(matches!(err, Error::NoSpace));
 }

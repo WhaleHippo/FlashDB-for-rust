@@ -142,9 +142,18 @@ where
         return Ok(());
     }
 
-    KvSectorHeader::decode(layout, &buf[..header_len])
-        .map(|_| ())
-        .map_err(scan::map_core_error)
+    if KvSectorHeader::decode(layout, &buf[..header_len]).is_err() {
+        buf[..header_len].fill(ERASED_BYTE);
+        let header = KvSectorHeader::new_empty();
+        header
+            .encode(layout, &mut buf[..header_len])
+            .map_err(scan::map_core_error)?;
+        storage.erase_sector(record_offset / storage.region().erase_size())?;
+        storage.write(sector_base, &buf[..header_len])?;
+        return Ok(());
+    }
+
+    Ok(())
 }
 
 fn write_payload<F>(
