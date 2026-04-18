@@ -12,7 +12,7 @@ pub(crate) fn mark_record_invalid<F>(
 where
     F: NorFlash,
 {
-    advance_status(storage, layout, record_offset, KV_ERR_HDR)
+    advance_record_status(storage, layout, record_offset, KV_ERR_HDR)
 }
 
 pub(crate) fn commit_record_status<F>(
@@ -24,10 +24,54 @@ pub(crate) fn commit_record_status<F>(
 where
     F: NorFlash,
 {
-    advance_status(storage, layout, record_offset, status)
+    advance_record_status(storage, layout, record_offset, status)
 }
 
-fn advance_status<F>(
+pub(crate) fn commit_sector_store_status<F>(
+    storage: &mut NorFlashRegion<F>,
+    layout: &KvLayout,
+    sector_base: u32,
+    status: usize,
+) -> Result<(), F::Error>
+where
+    F: NorFlash,
+{
+    let mut scratch = [0xFF; super::db::HEADER_BUF_CAP];
+    let write_unit = layout.write_unit_bytes();
+    for state in 2..=status {
+        layout.store_status_scheme().write_transition(
+            storage,
+            sector_base + layout.sector_store_offset() as u32,
+            state,
+            &mut scratch[..write_unit],
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn commit_sector_dirty_status<F>(
+    storage: &mut NorFlashRegion<F>,
+    layout: &KvLayout,
+    sector_base: u32,
+    status: usize,
+) -> Result<(), F::Error>
+where
+    F: NorFlash,
+{
+    let mut scratch = [0xFF; super::db::HEADER_BUF_CAP];
+    let write_unit = layout.write_unit_bytes();
+    for state in 2..=status {
+        layout.dirty_status_scheme().write_transition(
+            storage,
+            sector_base + layout.sector_dirty_offset() as u32,
+            state,
+            &mut scratch[..write_unit],
+        )?;
+    }
+    Ok(())
+}
+
+fn advance_record_status<F>(
     storage: &mut NorFlashRegion<F>,
     layout: &KvLayout,
     record_offset: u32,

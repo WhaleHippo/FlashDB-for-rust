@@ -3,7 +3,9 @@ use embedded_storage::nor_flash::NorFlash;
 use crate::crc::{CRC32_INIT, crc32_update};
 use crate::error::{Error, Result};
 use crate::layout::common::ERASED_BYTE;
-use crate::layout::kv::{KV_PRE_WRITE, KvLayout, KvRecordHeader, KvSectorHeader};
+use crate::layout::kv::{
+    KV_PRE_WRITE, KvLayout, KvRecordHeader, KvSectorHeader, SECTOR_STORE_FULL, SECTOR_STORE_USING,
+};
 use crate::storage::NorFlashRegion;
 
 use super::db::{HEADER_BUF_CAP, SCAN_CHUNK_CAP};
@@ -56,6 +58,9 @@ where
     let record_offset = find_record_slot(storage, layout, write_cursor, total_len)?;
     ensure_sector_header(storage, layout, record_offset)?;
 
+    let sector_base = sector_base(storage, record_offset);
+    recovery::commit_sector_store_status(storage, layout, sector_base, SECTOR_STORE_USING)?;
+
     header.status = KV_PRE_WRITE;
     let header_len = layout.record_header_len().map_err(scan::map_core_error)?;
     let mut header_buf = [ERASED_BYTE; HEADER_BUF_CAP];
@@ -73,9 +78,13 @@ where
     write_payload(storage, value_offset, value, &mut scratch)?;
 
     recovery::commit_record_status(storage, layout, record_offset, final_status)?;
-    record_offset
+    let next_cursor = record_offset
         .checked_add(total_len)
-        .ok_or(Error::InvariantViolation("KV write cursor overflow"))
+        .ok_or(Error::InvariantViolation("KV write cursor overflow"))?;
+    if next_cursor == sector_end(storage, record_offset)? {
+        recovery::commit_sector_store_status(storage, layout, sector_base, SECTOR_STORE_FULL)?;
+    }
+    Ok(next_cursor)
 }
 
 fn find_record_slot<F>(
@@ -127,8 +136,7 @@ fn ensure_sector_header<F>(
 where
     F: NorFlash,
 {
-    let sector_base =
-        (record_offset / storage.region().erase_size()) * storage.region().erase_size();
+    let sector_base = sector_base(storage, record_offset);
     let header_len = layout.sector_header_len().map_err(scan::map_core_error)?;
     let mut buf = [ERASED_BYTE; HEADER_BUF_CAP];
     storage.read(sector_base, &mut buf[..header_len])?;
@@ -170,6 +178,19 @@ where
     }
     let write_size = storage.region().write_size() as usize;
     storage.write_aligned(offset, bytes, &mut scratch[..write_size])
+}
+
+fn sector_base<F>(storage: &NorFlashRegion<F>, record_offset: u32) -> u32 {
+    (record_offset / storage.region().erase_size()) * storage.region().erase_size()
+}
+
+fn sector_end<F>(storage: &NorFlashRegion<F>, record_offset: u32) -> Result<u32, F::Error>
+where
+    F: NorFlash,
+{
+    sector_base(storage, record_offset)
+        .checked_add(storage.region().erase_size())
+        .ok_or(Error::OutOfBounds)
 }
 
 pub(crate) fn compute_record_crc(layout: &KvLayout, key: &[u8], value: &[u8]) -> Result<u32> {

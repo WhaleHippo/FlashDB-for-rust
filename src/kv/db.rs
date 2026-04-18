@@ -3,7 +3,7 @@ use embedded_storage::nor_flash::NorFlash;
 use crate::blob::locator::KvValueLocator;
 use crate::config::KvConfig;
 use crate::error::{Error, Result};
-use crate::layout::kv::{KV_DELETED, KV_WRITE, KvLayout};
+use crate::layout::kv::{KV_DELETED, KV_PRE_DELETE, KV_WRITE, KvLayout, SECTOR_DIRTY_TRUE};
 use crate::storage::{NorFlashRegion, StorageRegion};
 
 use super::scan;
@@ -22,6 +22,8 @@ where
     storage: NorFlashRegion<F>,
     write_cursor: u32,
 }
+
+pub use super::scan::{KvIntegrityReport, KvSectorMeta};
 
 impl<F> KvDb<F>
 where
@@ -77,12 +79,45 @@ where
     }
 
     pub fn set(&mut self, key: &str, value: &[u8]) -> Result<(), F::Error> {
-        self.validate_key_value(key.as_bytes(), value)?;
+        let key_bytes = key.as_bytes();
+        self.validate_key_value(key_bytes, value)?;
+
+        if let Some(existing) = scan::lookup_key(&mut self.storage, &self.layout, key_bytes)? {
+            let sector_base = self.sector_base(existing.record_offset);
+            super::recovery::commit_record_status(
+                &mut self.storage,
+                &self.layout,
+                existing.record_offset,
+                KV_PRE_DELETE,
+            )?;
+            super::recovery::commit_sector_dirty_status(
+                &mut self.storage,
+                &self.layout,
+                sector_base,
+                SECTOR_DIRTY_TRUE,
+            )?;
+            self.write_cursor = write::append_record(
+                &mut self.storage,
+                &self.layout,
+                self.write_cursor,
+                key_bytes,
+                value,
+                KV_WRITE,
+            )?;
+            super::recovery::commit_record_status(
+                &mut self.storage,
+                &self.layout,
+                existing.record_offset,
+                KV_DELETED,
+            )?;
+            return Ok(());
+        }
+
         self.write_cursor = write::append_record(
             &mut self.storage,
             &self.layout,
             self.write_cursor,
-            key.as_bytes(),
+            key_bytes,
             value,
             KV_WRITE,
         )?;
@@ -92,16 +127,36 @@ where
     pub fn delete(&mut self, key: &str) -> Result<bool, F::Error> {
         let key_bytes = key.as_bytes();
         self.validate_key(key_bytes)?;
-        if self.get_locator(key)?.is_none() {
-            return Ok(false);
-        }
 
+        let Some(existing) = scan::lookup_key(&mut self.storage, &self.layout, key_bytes)? else {
+            return Ok(false);
+        };
+
+        let sector_base = self.sector_base(existing.record_offset);
+        super::recovery::commit_record_status(
+            &mut self.storage,
+            &self.layout,
+            existing.record_offset,
+            KV_PRE_DELETE,
+        )?;
+        super::recovery::commit_sector_dirty_status(
+            &mut self.storage,
+            &self.layout,
+            sector_base,
+            SECTOR_DIRTY_TRUE,
+        )?;
         self.write_cursor = write::append_record(
             &mut self.storage,
             &self.layout,
             self.write_cursor,
             key_bytes,
             &[],
+            KV_DELETED,
+        )?;
+        super::recovery::commit_record_status(
+            &mut self.storage,
+            &self.layout,
+            existing.record_offset,
             KV_DELETED,
         )?;
         Ok(true)
@@ -138,6 +193,109 @@ where
         Ok(Some(needed))
     }
 
+    pub fn sector_meta(&mut self, sector_index: u32) -> Result<KvSectorMeta, F::Error> {
+        scan::sector_meta(&mut self.storage, &self.layout, sector_index)
+    }
+
+    pub fn check_integrity(&mut self) -> Result<KvIntegrityReport, F::Error> {
+        scan::integrity_check(&mut self.storage, &self.layout)
+    }
+
+    pub fn for_each_live_record(
+        &mut self,
+        key_buf: &mut [u8],
+        value_buf: &mut [u8],
+        mut visit: impl FnMut(&str, &[u8]),
+    ) -> Result<(), F::Error> {
+        let region = *self.storage.region();
+        let sector_header_len = self
+            .layout
+            .sector_header_len()
+            .map_err(scan::map_core_error)? as u32;
+        let record_header_len = self
+            .layout
+            .record_header_len()
+            .map_err(scan::map_core_error)? as u32;
+
+        for sector_index in 0..region.sector_count() {
+            let sector_base = sector_index
+                .checked_mul(region.erase_size())
+                .ok_or(Error::OutOfBounds)?;
+            if scan::read_erased(&mut self.storage, sector_base, sector_header_len as usize)? {
+                break;
+            }
+            if scan::read_sector_header(&mut self.storage, &self.layout, sector_base).is_err() {
+                break;
+            }
+            let sector_end = sector_base
+                .checked_add(region.erase_size())
+                .ok_or(Error::OutOfBounds)?;
+            let mut record_offset = sector_base + sector_header_len;
+
+            while record_offset
+                .checked_add(record_header_len)
+                .is_some_and(|end| end <= sector_end)
+            {
+                if scan::read_erased(&mut self.storage, record_offset, record_header_len as usize)?
+                {
+                    break;
+                }
+                let header = match scan::read_record_header(
+                    &mut self.storage,
+                    &self.layout,
+                    record_offset,
+                ) {
+                    Ok(header) => header,
+                    Err(_) => break,
+                };
+                let next_offset = record_offset
+                    .checked_add(header.total_len)
+                    .ok_or(Error::OutOfBounds)?;
+                if next_offset > sector_end {
+                    break;
+                }
+
+                if matches!(header.status, KV_WRITE | KV_PRE_DELETE)
+                    && scan::record_crc_matches(
+                        &mut self.storage,
+                        &self.layout,
+                        record_offset,
+                        &header,
+                    )?
+                {
+                    let key_len = scan::read_key_into(
+                        &mut self.storage,
+                        &self.layout,
+                        record_offset,
+                        &header,
+                        key_buf,
+                    )?;
+                    if let Some(latest) =
+                        scan::lookup_key(&mut self.storage, &self.layout, &key_buf[..key_len])?
+                            .filter(|latest| {
+                                !latest.deleted && latest.record_offset == record_offset
+                            })
+                    {
+                        let value_len = scan::read_value_into(
+                            &mut self.storage,
+                            &self.layout,
+                            latest.record_offset,
+                            &header,
+                            value_buf,
+                        )?;
+                        let key = scan::utf8_key(&key_buf[..key_len])
+                            .map_err(scan::map_core_error::<F::Error>)?;
+                        visit(key, &value_buf[..value_len]);
+                    }
+                }
+
+                record_offset = next_offset;
+            }
+        }
+
+        Ok(())
+    }
+
     fn validate_key_value(&self, key: &[u8], value: &[u8]) -> Result<(), F::Error> {
         self.validate_key(key)?;
         if value.len() > self.config.max_value_len {
@@ -161,5 +319,9 @@ where
             return Err(Error::InvariantViolation("KV key length must fit in u8"));
         }
         Ok(())
+    }
+
+    fn sector_base(&self, offset: u32) -> u32 {
+        (offset / self.storage.region().erase_size()) * self.storage.region().erase_size()
     }
 }

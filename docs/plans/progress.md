@@ -5,89 +5,81 @@
 
 ## 1. 현재 기준점
 
-- 현재 막 완료한 plan: `docs/plans/04-kvdb-mvp-plan.md`
+- 현재 작업 중인 plan: `docs/plans/05-kvdb-gc-and-recovery-plan.md`
 - 전체 진행 위치:
   - plan 00: 해석 완료
   - plan 01: 완료
   - plan 02: 완료
   - plan 03: 완료
   - plan 04: 완료
-  - plan 05 이후: 아직 미구현
+  - plan 05: 진행 중 (Phase 1/2/4/5/8/9에 해당하는 첫 구현 slice 반영)
+  - plan 06 이후: 아직 미구현
 
 즉, 현재 프로젝트는:
 - storage/alignment/status/layout foundation을 이미 확보했고,
 - blob abstraction / locator / codec 계층이 준비되어 있으며,
-- 그 위에 KVDB MVP의 mount/init, format, set/get/delete, scan lookup, torn-write/CRC tail recovery까지 연결된 상태다.
+- KVDB MVP의 mount/init, format, set/get/delete, scan lookup, torn-write/CRC tail recovery가 동작하고,
+- 그 위에 plan 05의 recovery/dirty metadata/traversal/integrity 관련 첫 slice가 추가된 상태다.
 
-## 2. 이번에 plan 04에서 완료한 것
+## 2. 이번에 plan 05에서 완료한 것
 
-### 2.1 KVDB runtime state와 mount/boot scan 구현
-`src/kv/db.rs`, `src/kv/scan.rs`를 중심으로 KVDB runtime을 실제 동작 가능한 형태로 확장했다.
-
-구현된 내용:
-- `KvDb<F>` 제네릭 런타임 정의
-- `KvDb::mount(flash, config)`
-- region/layout validation
-- boot scan으로 write cursor 계산
-- sector header/record header decode 기반 sequential scan
-
-의미:
-- 기존의 설정-only placeholder에서 벗어나,
-- 실제 flash backend를 붙여 mount 가능한 KVDB core가 생겼다.
-
-### 2.2 format + append-only set/delete 경로 구현
-`src/kv/write.rs`, `src/kv/recovery.rs`를 추가 구현했다.
+### 2.1 PRE_DELETE 기반 상태기계 첫 반영
+`src/kv/db.rs`, `src/kv/scan.rs`, `src/kv/recovery.rs`를 중심으로 overwrite/delete 경로를 FlashDB 쪽 상태 전이에 더 가깝게 보강했다.
 
 구현된 내용:
-- `format()`
-  - 전 sector erase
-  - sector header 재초기화
-- `set(key, value)`
-  - CRC 계산
-  - PRE_WRITE header 기록
-  - key/value aligned write
-  - status commit
-- `delete(key)`
-  - tombstone-like append delete record
-  - 최신 record 기준 delete semantics 반영
-- status transition은 intermediate state까지 순차 프로그램하도록 구현
+- overwrite/delete 전에 old record를 `KV_PRE_DELETE`로 전이
+- 새 record append 이후 old record를 `KV_DELETED`로 finalize
+- mount/lookup/traversal에서 `KV_PRE_DELETE`를 recovery 가능한 live 상태로 해석
+- PRE_DELETE만 남은 중간 상태에서도 기존 값이 계속 읽히도록 처리
 
 의미:
-- MVP 단계에서 필요한 append-only write path와 delete path가 갖춰졌고,
-- FlashDB status table의 write-once 제약을 지키는 방향으로 commit/recovery가 동작한다.
+- plan 04의 단순 tombstone append-only semantics에서 한 단계 올라가,
+- update/delete 중 전원 차단을 더 자연스럽게 해석할 수 있는 기초 상태기계가 들어왔다.
 
-### 2.3 scan 기반 latest-wins lookup 구현
-`src/kv/scan.rs`, `src/kv/db.rs`에 lookup surface를 추가했다.
+### 2.2 sector metadata / dirty tracking 가시화
+`src/kv/recovery.rs`, `src/kv/write.rs`, `src/kv/scan.rs`, `src/kv/db.rs`를 통해 sector 상태를 읽고 관찰할 수 있게 했다.
 
 구현된 내용:
-- `get_locator(key)`
-- `get_blob_into(key, buf)`
-- `contains_key(key)`
-- scan 기반 newest-wins lookup
-- delete record가 최신이면 not found 처리
+- sector header의 store status를 write path에서 `EMPTY -> USING -> FULL` 방향으로 갱신
+- overwrite/delete 시 old record가 있던 sector를 dirty로 마킹
+- `KvDb::sector_meta(sector_index)` 추가
+  - `store_status`
+  - `dirty_status`
+  - `next_record_offset`
+  - `remaining_bytes`
 
 의미:
-- MVP 요구사항인 O(n) scan lookup을 우선 구현했고,
-- 이후 cache 최적화(plan 05) 없이도 올바른 read semantics를 제공한다.
+- 아직 GC 본체는 없지만,
+- 어떤 sector가 dirty 후보인지와 남은 공간이 얼마인지 런타임에서 직접 관찰 가능해졌다.
 
-### 2.4 recovery 처리 구현
-`src/kv/recovery.rs`, `src/kv/scan.rs`에서 mount-time recovery를 연결했다.
+### 2.3 live traversal API 추가
+`src/kv/db.rs`에 traversal surface를 추가했다.
 
 구현된 내용:
-- PRE_WRITE tail 검출 시 `KV_ERR_HDR`로 승격
-- CRC mismatch tail 검출 시 `KV_ERR_HDR`로 승격
-- 이후 write cursor를 안전한 다음 append 지점으로 이동
-- recovery 이후에도 이전 valid record read 유지
-- recovery 이후 새 write 가능
+- `KvDb::for_each_live_record(key_buf, value_buf, visit)` 추가
+- stale record / deleted tombstone은 숨기고
+- latest/live record만 callback으로 노출
 
 의미:
-- 단순히 mount를 실패시키지 않고,
-- MVP 수준에서 power-loss tail을 잘라내고 계속 운용 가능한 상태를 만든다.
+- plan 05의 iterator/traversal 요구를 첫 단계로 충족한다.
+- 아직 dedicated iterator struct는 없지만, 테스트와 상위 로직이 live set을 순회할 수 있다.
+
+### 2.4 integrity check API 추가
+`src/kv/scan.rs`, `src/kv/db.rs`에 전체 KVDB 정합성 점검 API를 추가했다.
+
+구현된 내용:
+- `KvDb::check_integrity()` 추가
+- sector header decode 실패 수 집계
+- record header 손상 / 길이 이상 / CRC mismatch 수 집계
+- `KvIntegrityReport { sector_issues, record_issues }`
+- `is_clean()` 헬퍼 제공
+
+의미:
+- recovery 이후 상태를 눈으로 검증할 수 있는 디버깅/시뮬레이션용 진단면이 생겼다.
 
 ## 3. 이번 slice에서 수정된 파일
 
 ### 코드
-- `src/error.rs`
 - `src/kv/db.rs`
 - `src/kv/mod.rs`
 - `src/kv/recovery.rs`
@@ -95,11 +87,9 @@
 - `src/kv/write.rs`
 
 ### 테스트
-- `tests/kv_basic.rs`
-- `tests/kv_recovery.rs`
+- `tests/kv_plan05.rs`
 
 ### 문서
-- `docs/plans/README.md`
 - `docs/plans/progress.md`
 
 ## 4. 테스트로 검증된 것
@@ -111,52 +101,46 @@
 - `cargo test --features std`
 
 새로 검증된 핵심 시나리오:
-- empty -> format -> set -> get
-- overwrite 후 latest-wins lookup
-- set -> delete -> not found -> re-set
-- sector boundary를 넘는 append
-- full region 상태에서 `Error::NoSpace` 반환
-- reboot 후 mount 복구
-- PRE_WRITE tail recovery 후 이전 값 유지 + 재쓰기 가능
-- CRC mismatch tail recovery 후 이전 값 유지 + 재쓰기 가능
-- 손상된 다음 sector header를 mount 후 재초기화하고 재사용 가능
+- overwrite 후 old sector dirty status 반영
+- sector metadata에서 next write 위치 / remaining bytes 확인
+- PRE_DELETE만 남은 중간 상태에서도 mount 후 기존 값 유지
+- traversal API가 stale/deleted record를 숨기고 live/latest record만 노출
+- integrity check가 손상된 record header를 검출
 
-## 5. plan 04 완료 판단
+## 5. plan 05 완료 판단
 
-이번 기준에서 plan 04 완료로 판단한 이유:
-- mount/init가 실제 flash backend 기준으로 동작한다.
-- format이 region reset을 수행한다.
-- set/get/delete roundtrip이 mock flash에서 검증되었다.
-- scan 기반 lookup이 최신 record semantics를 제공한다.
-- interrupted/corrupted tail 이후에도 mount 및 이전 데이터 유지가 가능하다.
-- Blob locator/read 모델과 KV read surface가 자연스럽게 연결되었다.
+아직 plan 05 전체 완료는 아니다.
 
-보수적으로 보면 아직 GC, cache, iterator 고도화, sector dirty 기반 재정리 로직은 없다.
-하지만 이건 plan 04 범위가 아니라 plan 05 이후 대상이다.
+이번 기준에서 완료된 범위:
+- 상태기계의 첫 구체화
+- PRE_DELETE 해석 및 recovery-friendly lookup
+- dirty sector tracking의 시작점
+- traversal API의 첫 구현
+- integrity check API
 
-## 6. 아직 스캐폴드 또는 다음 plan 대상인 영역
-
-이건 plan 04 미완료가 아니라 상위 plan의 미구현 영역이다.
-
+아직 남은 핵심 범위:
 - `src/kv/gc.rs`
-  - sector reclaim / compact / dirty 상태 관리
-- `src/kv/iter.rs`
-  - iterator API 고도화
-- cache / default KV / auto-update
-- 보다 upstream에 가까운 sector lifecycle 및 recovery 정교화
-- `src/tsdb/*`
-  - TSDB 본 구현은 plan 06 대상
+  - 실제 copy-forward GC
+  - GC victim 선정 정책
+  - reclaim 후 공간 회수 경로
+- recovery state machine의 추가 고도화
+  - old/new record 관계를 더 upstream 가깝게 정리하는 mount-time 정리
+- dedicated iterator struct / 보다 풍부한 traversal surface
+- optional cache
+- default KV / auto update 설계 반영
 
-## 7. 다음 작업 우선순위
+## 6. 다음 작업 우선순위
 
 가장 추천하는 다음 단계:
-1. `docs/plans/05-kvdb-gc-and-recovery-plan.md`
+1. `docs/plans/05-kvdb-gc-and-recovery-plan.md` 계속 진행
+   - 특히 Phase 6 `copy-forward GC 구현`
+   - 이어서 Phase 7 `GC 정책 분리`
 2. 이후 `docs/plans/06-tsdb-plan.md`
 
 이유:
-- KVDB MVP core가 준비되었고,
-- 이제 append-only MVP를 실제 장기 운용 가능한 KVDB로 만들기 위해 GC/recovery/iterator 쪽을 확장할 시점이다.
+- dirty metadata와 traversal/integrity surface가 생겨서,
+- 이제 실제 GC를 구현하고 반복 set/delete 후 공간을 회수하는 단계로 넘어갈 준비가 됐다.
 
-## 8. 다음 세션 시작용 한 줄 요약
+## 7. 다음 세션 시작용 한 줄 요약
 
-- "plan 04까지 완료됐다. KVDB MVP mount/init, format, set/get/delete, latest-wins scan lookup, PRE_WRITE/CRC tail recovery, reboot 후 재쓰기 가능한 경로까지 구현 및 테스트 완료. 다음은 plan 05 GC/recovery 고도화다."
+- "plan 05는 부분 진행 상태다. PRE_DELETE 기반 overwrite/delete 상태 전이, dirty sector metadata, live traversal API, integrity check API까지 구현 및 테스트 완료. 다음은 실제 GC(copy-forward + reclaim policy) 구현이다."
