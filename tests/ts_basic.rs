@@ -1,4 +1,5 @@
 use flashdb_for_rust::error::Error;
+use flashdb_for_rust::layout::ts::{TSL_DELETED, TSL_WRITE};
 use flashdb_for_rust::storage::MockFlash;
 use flashdb_for_rust::tsdb::TsDb;
 use flashdb_for_rust::{BlobMode, StorageRegionConfig, TimestampPolicy, TsdbConfig};
@@ -77,4 +78,70 @@ fn tsdb_strict_monotonic_policy_rejects_equal_or_older_timestamps() {
             next: 99
         }
     ));
+}
+
+#[test]
+fn tsdb_reverse_iteration_returns_latest_first_across_sectors() {
+    let mut db = TsDb::mount(TestFlash::new(), test_config()).unwrap();
+    db.format().unwrap();
+
+    for (ts, payload) in [
+        (10_u64, b"one".as_slice()),
+        (20, b"two".as_slice()),
+        (30, b"three".as_slice()),
+        (40, b"four".as_slice()),
+        (50, b"five".as_slice()),
+    ] {
+        db.append(ts, payload).unwrap();
+    }
+
+    let reverse = db.iter_reverse().unwrap().collect::<Vec<_>>();
+    let timestamps = reverse
+        .iter()
+        .map(|record| record.timestamp)
+        .collect::<Vec<_>>();
+    let payloads = reverse
+        .iter()
+        .map(|record| record.payload.clone())
+        .collect::<Vec<_>>();
+
+    assert_eq!(timestamps, vec![50, 40, 30, 20, 10]);
+    assert_eq!(payloads[0], b"five");
+    assert_eq!(payloads[4], b"one");
+}
+
+#[test]
+fn tsdb_iter_by_time_and_query_count_follow_inclusive_bounds() {
+    let mut db = TsDb::mount(TestFlash::new(), test_config()).unwrap();
+    db.format().unwrap();
+
+    for (ts, payload) in [
+        (10_u64, b"one".as_slice()),
+        (20, b"two".as_slice()),
+        (30, b"three".as_slice()),
+        (40, b"four".as_slice()),
+        (50, b"five".as_slice()),
+    ] {
+        db.append(ts, payload).unwrap();
+    }
+
+    let forward = db.iter_by_time(20, 40).unwrap().collect::<Vec<_>>();
+    assert_eq!(
+        forward
+            .iter()
+            .map(|record| record.timestamp)
+            .collect::<Vec<_>>(),
+        vec![20, 30, 40]
+    );
+    assert_eq!(db.query_count(20, 40, TSL_WRITE).unwrap(), 3);
+    assert_eq!(db.query_count(20, 40, TSL_DELETED).unwrap(), 0);
+
+    let reverse = db.iter_by_time(40, 20).unwrap().collect::<Vec<_>>();
+    assert_eq!(
+        reverse
+            .iter()
+            .map(|record| record.timestamp)
+            .collect::<Vec<_>>(),
+        vec![40, 30, 20]
+    );
 }

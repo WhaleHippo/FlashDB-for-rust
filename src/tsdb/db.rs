@@ -187,6 +187,37 @@ where
     }
 
     pub fn iter(&mut self) -> Result<TsIterator, F::Error> {
+        Ok(TsIterator::new(self.snapshot_records()?))
+    }
+
+    pub fn iter_reverse(&mut self) -> Result<TsIterator, F::Error> {
+        let mut records = self.snapshot_records()?;
+        records.reverse();
+        Ok(TsIterator::new(records))
+    }
+
+    pub fn iter_by_time(&mut self, from: u64, to: u64) -> Result<TsIterator, F::Error> {
+        let mut records = self.snapshot_records()?;
+        let (lower, upper) = if from <= to { (from, to) } else { (to, from) };
+        records.retain(|record| record.timestamp >= lower && record.timestamp <= upper);
+        if from > to {
+            records.reverse();
+        }
+        Ok(TsIterator::new(records))
+    }
+
+    pub fn query_count(&mut self, from: u64, to: u64, status: usize) -> Result<usize, F::Error> {
+        let records = self.snapshot_records()?;
+        let (lower, upper) = if from <= to { (from, to) } else { (to, from) };
+        Ok(records
+            .into_iter()
+            .filter(|record| {
+                record.timestamp >= lower && record.timestamp <= upper && record.status == status
+            })
+            .count())
+    }
+
+    fn snapshot_records(&mut self) -> Result<Vec<TsOwnedRecord>, F::Error> {
         let mut records = Vec::new();
         for sector_index in 0..self.region().sector_count() {
             if self.sectors[sector_index as usize].entry_count == 0 {
@@ -194,7 +225,7 @@ where
             }
             self.collect_sector_records(sector_index, &mut records)?;
         }
-        Ok(TsIterator::new(records))
+        Ok(records)
     }
 
     fn collect_sector_records(
@@ -240,6 +271,7 @@ where
                 let mut payload = vec![0u8; log_len as usize];
                 self.storage.read(log_addr, &mut payload)?;
                 out.push(TsOwnedRecord {
+                    status: header.status,
                     timestamp: header.timestamp,
                     payload,
                 });
