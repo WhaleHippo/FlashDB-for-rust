@@ -5,4 +5,4 @@ mod recovery;
 mod scan;
 mod write;
 
-pub use db::{KvDb, KvIntegrityReport, KvSectorMeta};
+pub use db::{KvDb, KvIntegrityReport, KvIterator, KvOwnedRecord, KvSectorMeta};

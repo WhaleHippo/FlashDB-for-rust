@@ -6,6 +6,8 @@ use crate::error::{Error, Result};
 use crate::layout::kv::{KV_DELETED, KV_PRE_DELETE, KV_WRITE, KvLayout, SECTOR_DIRTY_TRUE};
 use crate::storage::{NorFlashRegion, StorageRegion};
 
+use super::gc;
+use super::iter;
 use super::scan;
 use super::write;
 
@@ -17,12 +19,13 @@ pub struct KvDb<F>
 where
     F: NorFlash,
 {
-    config: KvConfig,
-    layout: KvLayout,
-    storage: NorFlashRegion<F>,
-    write_cursor: u32,
+    pub(super) config: KvConfig,
+    pub(super) layout: KvLayout,
+    pub(super) storage: NorFlashRegion<F>,
+    pub(super) write_cursor: u32,
 }
 
+pub use super::iter::{KvIterator, KvOwnedRecord};
 pub use super::scan::{KvIntegrityReport, KvSectorMeta};
 
 impl<F> KvDb<F>
@@ -78,9 +81,18 @@ where
         Ok(())
     }
 
+    pub fn collect_garbage(&mut self) -> Result<(), F::Error> {
+        gc::collect_garbage(self)
+    }
+
+    pub fn iter(&mut self) -> Result<KvIterator, F::Error> {
+        Ok(KvIterator::new(iter::snapshot_live_records(self)?))
+    }
+
     pub fn set(&mut self, key: &str, value: &[u8]) -> Result<(), F::Error> {
         let key_bytes = key.as_bytes();
         self.validate_key_value(key_bytes, value)?;
+        gc::ensure_space_for_record(self, key_bytes.len(), value.len())?;
 
         if let Some(existing) = scan::lookup_key(&mut self.storage, &self.layout, key_bytes)? {
             let sector_base = self.sector_base(existing.record_offset);
@@ -127,11 +139,14 @@ where
     pub fn delete(&mut self, key: &str) -> Result<bool, F::Error> {
         let key_bytes = key.as_bytes();
         self.validate_key(key_bytes)?;
-
-        let Some(existing) = scan::lookup_key(&mut self.storage, &self.layout, key_bytes)? else {
+        if scan::lookup_key(&mut self.storage, &self.layout, key_bytes)?.is_none() {
             return Ok(false);
-        };
+        }
 
+        gc::ensure_space_for_record(self, key_bytes.len(), 0)?;
+        let existing = scan::lookup_key(&mut self.storage, &self.layout, key_bytes)?.ok_or(
+            Error::InvariantViolation("live KV disappeared during delete"),
+        )?;
         let sector_base = self.sector_base(existing.record_offset);
         super::recovery::commit_record_status(
             &mut self.storage,

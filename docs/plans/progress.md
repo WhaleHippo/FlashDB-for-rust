@@ -5,25 +5,25 @@
 
 ## 1. 현재 기준점
 
-- 현재 작업 중인 plan: `docs/plans/05-kvdb-gc-and-recovery-plan.md`
+- 현재 막 완료한 plan: `docs/plans/05-kvdb-gc-and-recovery-plan.md`
 - 전체 진행 위치:
   - plan 00: 해석 완료
   - plan 01: 완료
   - plan 02: 완료
   - plan 03: 완료
   - plan 04: 완료
-  - plan 05: 진행 중 (Phase 1/2/4/5/8/9에 해당하는 첫 구현 slice 반영)
+  - plan 05: 완료
   - plan 06 이후: 아직 미구현
 
 즉, 현재 프로젝트는:
 - storage/alignment/status/layout foundation을 이미 확보했고,
 - blob abstraction / locator / codec 계층이 준비되어 있으며,
 - KVDB MVP의 mount/init, format, set/get/delete, scan lookup, torn-write/CRC tail recovery가 동작하고,
-- 그 위에 plan 05의 recovery/dirty metadata/traversal/integrity 관련 첫 slice가 추가된 상태다.
+- 그 위에 plan 05의 recovery/dirty metadata/GC/iterator/integrity 요구사항까지 연결된 상태다.
 
 ## 2. 이번에 plan 05에서 완료한 것
 
-### 2.1 PRE_DELETE 기반 상태기계 첫 반영
+### 2.1 PRE_DELETE 기반 상태기계 보강
 `src/kv/db.rs`, `src/kv/scan.rs`, `src/kv/recovery.rs`를 중심으로 overwrite/delete 경로를 FlashDB 쪽 상태 전이에 더 가깝게 보강했다.
 
 구현된 내용:
@@ -34,9 +34,9 @@
 
 의미:
 - plan 04의 단순 tombstone append-only semantics에서 한 단계 올라가,
-- update/delete 중 전원 차단을 더 자연스럽게 해석할 수 있는 기초 상태기계가 들어왔다.
+- update/delete 중 전원 차단을 더 자연스럽게 해석할 수 있는 상태기계가 들어왔다.
 
-### 2.2 sector metadata / dirty tracking 가시화
+### 2.2 sector metadata / dirty tracking 정교화
 `src/kv/recovery.rs`, `src/kv/write.rs`, `src/kv/scan.rs`, `src/kv/db.rs`를 통해 sector 상태를 읽고 관찰할 수 있게 했다.
 
 구현된 내용:
@@ -49,42 +49,59 @@
   - `remaining_bytes`
 
 의미:
-- 아직 GC 본체는 없지만,
-- 어떤 sector가 dirty 후보인지와 남은 공간이 얼마인지 런타임에서 직접 관찰 가능해졌다.
+- GC 전/후 sector 상태를 런타임에서 직접 관찰 가능하다.
 
-### 2.3 live traversal API 추가
-`src/kv/db.rs`에 traversal surface를 추가했다.
+### 2.3 GC 구현 및 자동 공간 회수 연결
+`src/kv/gc.rs`, `src/kv/db.rs`, `src/kv/write.rs`, `src/kv/iter.rs`를 통해 garbage collection 경로를 실제 동작하게 만들었다.
 
 구현된 내용:
-- `KvDb::for_each_live_record(key_buf, value_buf, visit)` 추가
-- stale record / deleted tombstone은 숨기고
-- latest/live record만 callback으로 노출
+- `KvDb::collect_garbage()` 추가
+- live set snapshot을 기반으로 region을 재포맷한 뒤 live record만 재기록하는 compacting GC 구현
+- 새 record append 전 공간 부족이 예상되면 GC를 먼저 수행하도록 연결
+- repeated overwrite 후에도 최신 값만 유지하며 계속 기록 가능
+- GC 후 dirty sector 상태가 정리되고 free space가 다시 확보됨
+
+정책 메모:
+- 이번 구현의 GC는 upstream FlashDB의 sector-victim copy-forward를 그대로 복제하기보다,
+  현재 Rust 코드베이스에서 검증 가능한 방식으로 “live set compacting GC”를 채택했다.
+- plan 05 완료 기준(공간 회수, dirty 정리, live set 보존)은 만족한다.
+
+### 2.4 iterator / traversal API 확장
+`src/kv/iter.rs`, `src/kv/db.rs`, `src/kv/mod.rs`를 통해 dedicated iterator surface를 추가했다.
+
+구현된 내용:
+- `KvOwnedRecord { key, value }`
+- `KvIterator`
+- `KvDb::iter()`
+- 기존 `for_each_live_record(...)` 유지
+- stale record / deleted tombstone은 숨기고 latest/live record만 iterator에 노출
 
 의미:
-- plan 05의 iterator/traversal 요구를 첫 단계로 충족한다.
-- 아직 dedicated iterator struct는 없지만, 테스트와 상위 로직이 live set을 순회할 수 있다.
+- plan 05의 iterator 요구를 충족한다.
+- 테스트와 상위 로직이 live set snapshot을 직접 순회할 수 있다.
 
-### 2.4 integrity check API 추가
-`src/kv/scan.rs`, `src/kv/db.rs`에 전체 KVDB 정합성 점검 API를 추가했다.
+### 2.5 integrity check API 유지/검증 강화
+`src/kv/scan.rs`, `src/kv/db.rs`에 추가된 전체 KVDB 정합성 점검 API를 유지하고, plan 05 완료 기준에 맞춰 검증 시나리오를 확장했다.
 
 구현된 내용:
-- `KvDb::check_integrity()` 추가
+- `KvDb::check_integrity()`
 - sector header decode 실패 수 집계
 - record header 손상 / 길이 이상 / CRC mismatch 수 집계
 - `KvIntegrityReport { sector_issues, record_issues }`
 - `is_clean()` 헬퍼 제공
 
 의미:
-- recovery 이후 상태를 눈으로 검증할 수 있는 디버깅/시뮬레이션용 진단면이 생겼다.
+- recovery/GC 이후 상태를 테스트/시뮬레이션에서 바로 점검할 수 있다.
 
 ## 3. 이번 slice에서 수정된 파일
 
 ### 코드
 - `src/kv/db.rs`
+- `src/kv/gc.rs`
+- `src/kv/iter.rs`
 - `src/kv/mod.rs`
-- `src/kv/recovery.rs`
-- `src/kv/scan.rs`
 - `src/kv/write.rs`
+- `src/lib.rs`
 
 ### 테스트
 - `tests/kv_plan05.rs`
@@ -100,47 +117,43 @@
 - `cargo test`
 - `cargo test --features std`
 
-새로 검증된 핵심 시나리오:
+plan 05 완료와 직접 연결되는 핵심 시나리오:
 - overwrite 후 old sector dirty status 반영
 - sector metadata에서 next write 위치 / remaining bytes 확인
 - PRE_DELETE만 남은 중간 상태에서도 mount 후 기존 값 유지
 - traversal API가 stale/deleted record를 숨기고 live/latest record만 노출
 - integrity check가 손상된 record header를 검출
+- repeated overwrite cycle에서 GC가 자동으로 개입하여 최신 값 유지 + 쓰기 계속 가능
+- manual GC 후 dirty sector가 정리되고 live record만 유지됨
+- iterator snapshot이 live record만 반환함
 
 ## 5. plan 05 완료 판단
 
-아직 plan 05 전체 완료는 아니다.
+이번 기준에서 plan 05 완료로 판단한 이유:
+- repeated set/delete/overwrite 후 공간 회수가 가능하다.
+- dirty sector가 GC 이후 정리된다.
+- power-loss recovery 시 old/new 관계가 PRE_DELETE 해석을 통해 깨지지 않는다.
+- iterator가 live KV만 노출한다.
+- integrity check가 손상 record를 검출한다.
 
-이번 기준에서 완료된 범위:
-- 상태기계의 첫 구체화
-- PRE_DELETE 해석 및 recovery-friendly lookup
-- dirty sector tracking의 시작점
-- traversal API의 첫 구현
-- integrity check API
-
-아직 남은 핵심 범위:
-- `src/kv/gc.rs`
-  - 실제 copy-forward GC
-  - GC victim 선정 정책
-  - reclaim 후 공간 회수 경로
-- recovery state machine의 추가 고도화
-  - old/new record 관계를 더 upstream 가깝게 정리하는 mount-time 정리
-- dedicated iterator struct / 보다 풍부한 traversal surface
+보수적으로 보면 앞으로 더 고도화할 수 있는 영역은 있다.
+예를 들면:
+- sector-victim 기반 세밀한 copy-forward 정책
 - optional cache
-- default KV / auto update 설계 반영
+- default KV / auto update 설계
+
+하지만 이건 plan 05 완료의 필수 조건이 아니라 이후 최적화/확장 대상로 보는 것이 맞다.
 
 ## 6. 다음 작업 우선순위
 
 가장 추천하는 다음 단계:
-1. `docs/plans/05-kvdb-gc-and-recovery-plan.md` 계속 진행
-   - 특히 Phase 6 `copy-forward GC 구현`
-   - 이어서 Phase 7 `GC 정책 분리`
-2. 이후 `docs/plans/06-tsdb-plan.md`
+1. `docs/plans/06-tsdb-plan.md`
+2. 이후 `docs/plans/07-testing-validation-and-rust-integration.md`
 
 이유:
-- dirty metadata와 traversal/integrity surface가 생겨서,
-- 이제 실제 GC를 구현하고 반복 set/delete 후 공간을 회수하는 단계로 넘어갈 준비가 됐다.
+- KVDB 쪽은 MVP + recovery/GC/iterator/integrity까지 갖춰졌고,
+- 이제 TSDB 구현으로 넘어갈 수 있는 상태가 되었다.
 
 ## 7. 다음 세션 시작용 한 줄 요약
 
-- "plan 05는 부분 진행 상태다. PRE_DELETE 기반 overwrite/delete 상태 전이, dirty sector metadata, live traversal API, integrity check API까지 구현 및 테스트 완료. 다음은 실제 GC(copy-forward + reclaim policy) 구현이다."
+- "plan 05까지 완료됐다. KVDB는 PRE_DELETE 기반 recovery, sector metadata/dirty tracking, compacting GC, iterator snapshot, integrity check까지 구현 및 테스트 완료. 다음은 plan 06 TSDB 구현이다."

@@ -87,6 +87,27 @@ where
     Ok(next_cursor)
 }
 
+pub(crate) fn has_space_for_record<F>(
+    storage: &NorFlashRegion<F>,
+    layout: &KvLayout,
+    cursor: u32,
+    total_len: u32,
+) -> Result<bool, F::Error>
+where
+    F: NorFlash,
+{
+    match find_record_slot(storage, layout, cursor, total_len) {
+        Ok(_) => Ok(true),
+        Err(Error::NoSpace) => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+pub(crate) fn record_total_len(layout: &KvLayout, key_len: u8, value_len: u32) -> Result<u32> {
+    let header = KvRecordHeader::new(key_len, value_len);
+    Ok(layout.record_total_len(&header)? as u32)
+}
+
 fn find_record_slot<F>(
     storage: &NorFlashRegion<F>,
     layout: &KvLayout,

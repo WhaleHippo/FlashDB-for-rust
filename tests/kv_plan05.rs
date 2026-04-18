@@ -16,6 +16,14 @@ fn test_config() -> KvConfig {
     }
 }
 
+fn gc_config() -> KvConfig {
+    KvConfig {
+        region: StorageRegionConfig::new(0, 1024, 256, 4),
+        max_key_len: 32,
+        max_value_len: 64,
+    }
+}
+
 fn layout() -> KvLayout {
     KvLayout::new(32).unwrap()
 }
@@ -127,4 +135,66 @@ fn integrity_check_reports_corrupted_record_headers() {
     let report = rebooted.check_integrity().unwrap();
     assert!(!report.is_clean());
     assert_eq!(report.record_issues, 1);
+}
+
+#[test]
+fn repeated_overwrite_cycles_trigger_gc_and_keep_latest_value() {
+    let config = gc_config();
+    let mut db = KvDb::mount(TestFlash::new(), config).unwrap();
+    db.format().unwrap();
+
+    for generation in 0..12u8 {
+        let value = [generation; 64];
+        db.set("mode", &value).unwrap();
+    }
+
+    let mut buf = [0u8; 64];
+    let len = db.get_blob_into("mode", &mut buf).unwrap().unwrap();
+    assert_eq!(len, 64);
+    assert_eq!(buf, [11u8; 64]);
+}
+
+#[test]
+fn manual_gc_clears_dirty_sectors_and_preserves_live_records() {
+    let config = gc_config();
+    let mut db = KvDb::mount(TestFlash::new(), config).unwrap();
+    db.format().unwrap();
+
+    db.set("alpha", &[0x11; 64]).unwrap();
+    db.set("alpha", &[0x22; 64]).unwrap();
+    db.set("beta", &[0x33; 64]).unwrap();
+    db.delete("beta").unwrap();
+
+    db.collect_garbage().unwrap();
+
+    let mut buf = [0u8; 64];
+    let len = db.get_blob_into("alpha", &mut buf).unwrap().unwrap();
+    assert_eq!(len, 64);
+    assert_eq!(buf, [0x22; 64]);
+    assert_eq!(db.get_blob_into("beta", &mut buf).unwrap(), None);
+
+    for sector_index in 0..db.region().sector_count() {
+        assert_eq!(
+            db.sector_meta(sector_index).unwrap().dirty_status,
+            SECTOR_DIRTY_FALSE
+        );
+    }
+}
+
+#[test]
+fn iterator_snapshot_yields_only_live_records() {
+    let config = gc_config();
+    let mut db = KvDb::mount(TestFlash::new(), config).unwrap();
+    db.format().unwrap();
+
+    db.set("alpha", &[0x41; 8]).unwrap();
+    db.set("beta", &[0x42; 8]).unwrap();
+    db.set("alpha", &[0x43; 8]).unwrap();
+    db.delete("beta").unwrap();
+    db.collect_garbage().unwrap();
+
+    let records: Vec<_> = db.iter().unwrap().collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].key, "alpha");
+    assert_eq!(records[0].value, vec![0x43; 8]);
 }
