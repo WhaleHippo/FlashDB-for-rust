@@ -29,6 +29,8 @@ where
     CorruptedHeader,
     CrcMismatch,
     NoSpace,
+    BufferTooSmall { needed: usize, actual: usize },
+    InvalidBlobOffset { offset: u32, len: u32 },
     UnsupportedFormatVersion(u16),
     InvariantViolation(&'static str),
     TimestampNotMonotonic { last: u64, next: u64 },

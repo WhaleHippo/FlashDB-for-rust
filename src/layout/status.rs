@@ -1,3 +1,5 @@
+use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
+
 use crate::error::{DecodeError, Error, Result};
 use crate::layout::common::{ERASED_BYTE, WRITTEN_BYTE};
 
@@ -36,6 +38,14 @@ impl StatusScheme {
     pub const fn write_granularity_bytes(&self) -> usize {
         if self.write_granularity_bits == 1 {
             0
+        } else {
+            self.write_granularity_bits / 8
+        }
+    }
+
+    pub const fn write_granularity_storage_bytes(&self) -> usize {
+        if self.write_granularity_bits == 1 {
+            1
         } else {
             self.write_granularity_bits / 8
         }
@@ -103,6 +113,77 @@ impl StatusScheme {
             let chunk_len = self.write_granularity_bytes();
             Some(((state_index - 1) * chunk_len, chunk_len))
         }
+    }
+
+    pub fn transition_write_bytes(
+        &self,
+        state_index: usize,
+        out: &mut [u8],
+    ) -> Result<Option<(usize, usize)>> {
+        let Some((offset, len)) = self.transition_write_span(state_index) else {
+            if state_index == 0 {
+                return Ok(None);
+            }
+            return Err(Error::Decode(DecodeError::InvalidState));
+        };
+        if out.len() < len {
+            return Err(Error::Decode(DecodeError::BufferTooShort));
+        }
+        if self.write_granularity_bits == 1 {
+            out[0] = if state_index % 8 == 0 {
+                WRITTEN_BYTE
+            } else {
+                0xFFu8 >> (state_index % 8)
+            };
+        } else {
+            out[..len].fill(WRITTEN_BYTE);
+        }
+        Ok(Some((offset, len)))
+    }
+
+    pub fn write_transition<F>(
+        &self,
+        flash: &mut F,
+        offset: u32,
+        state_index: usize,
+        scratch: &mut [u8],
+    ) -> Result<(), F::Error>
+    where
+        F: NorFlash,
+    {
+        if F::WRITE_SIZE != self.write_granularity_storage_bytes() {
+            return Err(Error::InvariantViolation(
+                "status transition write size must match backend WRITE_SIZE",
+            ));
+        }
+        let Some((span_offset, span_len)) = self
+            .transition_write_bytes(state_index, scratch)
+            .map_err(map_scheme_error)?
+        else {
+            return Ok(());
+        };
+        flash
+            .write(offset + span_offset as u32, &scratch[..span_len])
+            .map_err(Error::Storage)
+    }
+
+    pub fn read_status<F>(
+        &self,
+        flash: &mut F,
+        offset: u32,
+        scratch: &mut [u8],
+    ) -> Result<usize, F::Error>
+    where
+        F: ReadNorFlash,
+    {
+        let table_len = self.table_len();
+        if scratch.len() < table_len {
+            return Err(Error::Decode(DecodeError::BufferTooShort));
+        }
+        flash
+            .read(offset, &mut scratch[..table_len])
+            .map_err(Error::Storage)?;
+        self.decode(&scratch[..table_len]).map_err(map_scheme_error)
     }
 
     pub fn decode(&self, bytes: &[u8]) -> Result<usize> {
@@ -182,5 +263,27 @@ impl<'a> StatusTableBuf<'a> {
 
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.scheme.table_len()]
+    }
+}
+
+fn map_scheme_error<E>(err: Error) -> Error<E>
+where
+    E: core::fmt::Debug,
+{
+    match err {
+        Error::Storage(_) => {
+            Error::InvariantViolation("unexpected storage error during status-table operation")
+        }
+        Error::Decode(decode) => Error::Decode(decode),
+        Error::Alignment(alignment) => Error::Alignment(alignment),
+        Error::OutOfBounds => Error::OutOfBounds,
+        Error::CorruptedHeader => Error::CorruptedHeader,
+        Error::CrcMismatch => Error::CrcMismatch,
+        Error::NoSpace => Error::NoSpace,
+        Error::BufferTooSmall { needed, actual } => Error::BufferTooSmall { needed, actual },
+        Error::InvalidBlobOffset { offset, len } => Error::InvalidBlobOffset { offset, len },
+        Error::UnsupportedFormatVersion(version) => Error::UnsupportedFormatVersion(version),
+        Error::InvariantViolation(msg) => Error::InvariantViolation(msg),
+        Error::TimestampNotMonotonic { last, next } => Error::TimestampNotMonotonic { last, next },
     }
 }
