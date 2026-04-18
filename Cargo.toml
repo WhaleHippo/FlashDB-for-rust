@@ -1,0 +1,14 @@
+[package]
+name = "flashdb-for-embassy"
+version = "0.1.0"
+edition = "2021"
+description = "FlashDB-inspired storage primitives for Rust + Embassy"
+license = "MIT"
+repository = "https://example.invalid/flashdb-for-embassy"
+
+[features]
+default = []
+std = []
+
+[dependencies]
+embedded-storage = "0.3"

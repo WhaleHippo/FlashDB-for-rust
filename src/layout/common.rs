@@ -1,0 +1,7 @@
+pub const ERASED_BYTE: u8 = 0xFF;
+pub const FORMAT_VERSION: u16 = 1;
+pub const KV_SECTOR_MAGIC: u32 = 0x4B56_5345; // KVSE
+pub const KV_RECORD_MAGIC: u32 = 0x4B56_5245; // KVRE
+pub const TS_SECTOR_MAGIC: u32 = 0x5453_5345; // TSSE
+pub const TS_INDEX_MAGIC: u32 = 0x5453_4944; // TSID
+pub const DATA_UNUSED_SENTINEL: u32 = 0xFFFF_FFFF;
