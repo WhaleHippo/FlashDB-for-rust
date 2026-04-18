@@ -1,4 +1,4 @@
-use flashdb_for_embassy::{BlobMode, KvConfig, StorageRegionConfig, TsdbConfig, TimestampPolicy};
+use flashdb_for_embassy::{BlobMode, KvConfig, StorageRegionConfig, TimestampPolicy, TsdbConfig};
 
 fn region() -> StorageRegionConfig {
     StorageRegionConfig::new(0, 4096, 2048, 8)

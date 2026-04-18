@@ -1,4 +1,6 @@
-use embedded_storage::nor_flash::{ErrorType, NorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash};
+use embedded_storage::nor_flash::{
+    ErrorType, NorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MockFlashError {
@@ -83,7 +85,10 @@ impl<const N: usize, const WRITE_SIZE: usize, const ERASE_SIZE: usize> NorFlash
         if end > N {
             return Err(MockFlashError::OutOfBounds);
         }
-        for (dst, src) in self.bytes[offset..end].iter_mut().zip(bytes.iter().copied()) {
+        for (dst, src) in self.bytes[offset..end]
+            .iter_mut()
+            .zip(bytes.iter().copied())
+        {
             if (src | *dst) != *dst {
                 return Err(MockFlashError::RequiresErase);
             }

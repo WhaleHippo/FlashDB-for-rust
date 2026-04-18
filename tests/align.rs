@@ -1,4 +1,6 @@
-use flashdb_for_embassy::layout::align::{align_down, align_to_write_size, align_up, aligned_tail_size};
+use flashdb_for_embassy::layout::align::{
+    align_down, align_to_write_size, align_up, aligned_tail_size,
+};
 
 #[test]
 fn aligns_boundaries() {

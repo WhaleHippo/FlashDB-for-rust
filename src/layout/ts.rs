@@ -1,5 +1,7 @@
 use crate::error::{DecodeError, Error, Result};
-use crate::layout::common::{FORMAT_VERSION, TS_INDEX_MAGIC, TS_SECTOR_MAGIC};
+use crate::layout::common::{FORMAT_VERSION, TS_SECTOR_MAGIC};
+
+const TS_INDEX_MAGIC: u32 = 0x5453_4944;
 
 pub const TS_SECTOR_HEADER_LEN: usize = 16;
 pub const TS_INDEX_HEADER_LEN: usize = 20;
@@ -121,6 +123,11 @@ pub fn fixed_index_span(entries: usize) -> usize {
     entries * TS_INDEX_HEADER_LEN
 }
 
-pub fn sector_remaining(total: usize, header_len: usize, used_front: usize, used_back: usize) -> usize {
+pub fn sector_remaining(
+    total: usize,
+    header_len: usize,
+    used_front: usize,
+    used_back: usize,
+) -> usize {
     total.saturating_sub(header_len + used_front + used_back)
 }

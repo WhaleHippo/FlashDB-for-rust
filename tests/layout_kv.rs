@@ -7,7 +7,10 @@ fn kv_sector_header_roundtrip() {
     let mut buf = [0u8; 12];
     header.encode(&mut buf).unwrap();
     assert_eq!(&buf[..4], &KV_SECTOR_MAGIC.to_le_bytes());
-    assert_eq!(KvSectorHeader::decode(&buf).unwrap().format_version, FORMAT_VERSION);
+    assert_eq!(
+        KvSectorHeader::decode(&buf).unwrap().format_version,
+        FORMAT_VERSION
+    );
 }
 
 #[test]

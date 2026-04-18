@@ -44,7 +44,9 @@ impl StorageRegionConfig {
             return Err(Error::InvariantViolation("len must align to erase_size"));
         }
         if self.len < self.erase_size.saturating_mul(2) {
-            return Err(Error::InvariantViolation("region must span at least two erase blocks"));
+            return Err(Error::InvariantViolation(
+                "region must span at least two erase blocks",
+            ));
         }
         Ok(self)
     }
@@ -82,7 +84,9 @@ impl TsdbConfig {
     pub fn validate(self) -> Result<Self> {
         self.region.validate()?;
         if matches!(self.blob_mode, BlobMode::Fixed(0)) {
-            return Err(Error::InvariantViolation("fixed blob mode must be non-zero"));
+            return Err(Error::InvariantViolation(
+                "fixed blob mode must be non-zero",
+            ));
         }
         Ok(self)
     }

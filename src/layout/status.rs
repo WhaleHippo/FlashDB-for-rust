@@ -1,19 +1,27 @@
 use crate::error::{DecodeError, Error, Result};
+use crate::layout::common::{ERASED_BYTE, WRITTEN_BYTE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusScheme {
     state_count: usize,
-    granularity_bytes: usize,
+    write_granularity_bits: usize,
 }
 
 impl StatusScheme {
-    pub fn new(state_count: usize, granularity_bytes: usize) -> Result<Self> {
-        if state_count == 0 || granularity_bytes == 0 {
-            return Err(Error::InvariantViolation("status scheme parameters must be non-zero"));
+    pub fn new(state_count: usize, write_granularity_bits: usize) -> Result<Self> {
+        if state_count == 0 || write_granularity_bits == 0 {
+            return Err(Error::InvariantViolation(
+                "status scheme parameters must be non-zero",
+            ));
+        }
+        if write_granularity_bits != 1 && write_granularity_bits % 8 != 0 {
+            return Err(Error::InvariantViolation(
+                "write granularity must be 1 bit or a whole number of bytes",
+            ));
         }
         Ok(Self {
             state_count,
-            granularity_bytes,
+            write_granularity_bits,
         })
     }
 
@@ -21,47 +29,158 @@ impl StatusScheme {
         self.state_count
     }
 
-    pub const fn granularity_bytes(&self) -> usize {
-        self.granularity_bytes
+    pub const fn write_granularity_bits(&self) -> usize {
+        self.write_granularity_bits
+    }
+
+    pub const fn write_granularity_bytes(&self) -> usize {
+        if self.write_granularity_bits == 1 {
+            0
+        } else {
+            self.write_granularity_bits / 8
+        }
     }
 
     pub const fn table_len(&self) -> usize {
-        self.state_count * self.granularity_bytes
+        if self.write_granularity_bits == 1 {
+            (self.state_count + 7) / 8
+        } else {
+            ((self.state_count - 1) * self.write_granularity_bits + 7) / 8
+        }
     }
 
     pub fn encode(&self, state_index: usize, out: &mut [u8]) -> Result<()> {
+        self.encode_transition(state_index, out).map(|_| ())
+    }
+
+    pub fn encode_transition(
+        &self,
+        state_index: usize,
+        out: &mut [u8],
+    ) -> Result<Option<(usize, usize)>> {
         if out.len() < self.table_len() {
             return Err(Error::Decode(DecodeError::BufferTooShort));
         }
         if state_index >= self.state_count {
             return Err(Error::Decode(DecodeError::InvalidState));
         }
-        out[..self.table_len()].fill(0xFF);
-        let programmed = state_index * self.granularity_bytes;
-        out[..programmed].fill(0x00);
-        Ok(())
+
+        let out = &mut out[..self.table_len()];
+        out.fill(ERASED_BYTE);
+
+        if state_index == 0 {
+            return Ok(None);
+        }
+
+        if self.write_granularity_bits == 1 {
+            let full_bytes = state_index / 8;
+            let partial_bits = state_index % 8;
+
+            for byte in out.iter_mut().take(full_bytes) {
+                *byte = WRITTEN_BYTE;
+            }
+            if partial_bits != 0 {
+                out[full_bytes] = 0xFFu8 >> partial_bits;
+            }
+        } else {
+            let chunk_len = self.write_granularity_bytes();
+            for chunk in out.chunks_mut(chunk_len).take(state_index) {
+                chunk.fill(WRITTEN_BYTE);
+            }
+        }
+
+        Ok(self.transition_write_span(state_index))
+    }
+
+    pub fn transition_write_span(&self, state_index: usize) -> Option<(usize, usize)> {
+        if state_index == 0 || state_index >= self.state_count {
+            return None;
+        }
+
+        if self.write_granularity_bits == 1 {
+            Some(((state_index - 1) / 8, 1))
+        } else {
+            let chunk_len = self.write_granularity_bytes();
+            Some(((state_index - 1) * chunk_len, chunk_len))
+        }
     }
 
     pub fn decode(&self, bytes: &[u8]) -> Result<usize> {
         if bytes.len() < self.table_len() {
             return Err(Error::Decode(DecodeError::BufferTooShort));
         }
-        let mut state = 0;
-        while state < self.state_count {
-            let start = state * self.granularity_bytes;
-            let end = start + self.granularity_bytes;
-            let chunk = &bytes[start..end];
-            let is_programmed = chunk.iter().all(|&b| b == 0x00);
-            if is_programmed {
-                state += 1;
-                continue;
+
+        let bytes = &bytes[..self.table_len()];
+
+        if self.write_granularity_bits == 1 {
+            let mut state_index = 0;
+            for bit_index in 0..(self.state_count - 1) {
+                let byte_index = bit_index / 8;
+                let mask = 0x80u8 >> (bit_index % 8);
+                let programmed = bytes[byte_index] & mask == 0;
+                if programmed {
+                    state_index += 1;
+                } else {
+                    for remaining_bit in (bit_index + 1)..(self.state_count - 1) {
+                        let remaining_byte = remaining_bit / 8;
+                        let remaining_mask = 0x80u8 >> (remaining_bit % 8);
+                        if bytes[remaining_byte] & remaining_mask == 0 {
+                            return Err(Error::Decode(DecodeError::InvalidState));
+                        }
+                    }
+                    return Ok(state_index);
+                }
             }
-            let is_erased = chunk.iter().all(|&b| b == 0xFF);
-            if is_erased {
-                return Ok(state);
-            }
-            return Err(Error::Decode(DecodeError::InvalidState));
+            return Ok(state_index);
         }
-        Ok(self.state_count.saturating_sub(1))
+
+        let chunk_len = self.write_granularity_bytes();
+        let mut state_index = 0;
+        let mut saw_erased = false;
+
+        for chunk in bytes.chunks(chunk_len).take(self.state_count - 1) {
+            let all_written = chunk.iter().all(|&byte| byte == WRITTEN_BYTE);
+            let all_erased = chunk.iter().all(|&byte| byte == ERASED_BYTE);
+
+            if all_written {
+                if saw_erased {
+                    return Err(Error::Decode(DecodeError::InvalidState));
+                }
+                state_index += 1;
+            } else if all_erased {
+                saw_erased = true;
+            } else {
+                return Err(Error::Decode(DecodeError::InvalidState));
+            }
+        }
+
+        Ok(state_index)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct StatusTableBuf<'a> {
+    scheme: StatusScheme,
+    bytes: &'a mut [u8],
+}
+
+impl<'a> StatusTableBuf<'a> {
+    pub fn new(scheme: StatusScheme, bytes: &'a mut [u8]) -> Result<Self> {
+        if bytes.len() < scheme.table_len() {
+            return Err(Error::Decode(DecodeError::BufferTooShort));
+        }
+        Ok(Self { scheme, bytes })
+    }
+
+    pub fn encode(&mut self, state_index: usize) -> Result<()> {
+        self.scheme.encode(state_index, self.bytes)
+    }
+
+    pub fn decode(&self) -> Result<usize> {
+        self.scheme.decode(self.bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.scheme.table_len()]
     }
 }

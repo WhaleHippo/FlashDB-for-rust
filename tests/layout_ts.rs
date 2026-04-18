@@ -1,5 +1,7 @@
 use flashdb_for_embassy::layout::common::{FORMAT_VERSION, TS_SECTOR_MAGIC};
-use flashdb_for_embassy::layout::ts::{fixed_index_span, sector_remaining, TsIndexHeader, TsSectorHeader};
+use flashdb_for_embassy::layout::ts::{
+    fixed_index_span, sector_remaining, TsIndexHeader, TsSectorHeader,
+};
 
 #[test]
 fn ts_sector_header_roundtrip() {
@@ -7,7 +9,10 @@ fn ts_sector_header_roundtrip() {
     let mut buf = [0u8; 16];
     header.encode(&mut buf).unwrap();
     assert_eq!(&buf[..4], &TS_SECTOR_MAGIC.to_le_bytes());
-    assert_eq!(TsSectorHeader::decode(&buf).unwrap().format_version, FORMAT_VERSION);
+    assert_eq!(
+        TsSectorHeader::decode(&buf).unwrap().format_version,
+        FORMAT_VERSION
+    );
 }
 
 #[test]

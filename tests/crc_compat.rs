@@ -1,4 +1,4 @@
-use flashdb_for_embassy::crc::{crc_chain, crc_with_ff_padding, crc32};
+use flashdb_for_embassy::crc::{crc32, crc_chain, crc_with_ff_padding};
 
 #[test]
 fn crc32_known_vector_matches_standard() {
@@ -12,5 +12,8 @@ fn chained_crc_matches_single_pass() {
 
 #[test]
 fn ff_padding_changes_digest_deterministically() {
-    assert_eq!(crc_with_ff_padding(b"abc", 4), crc32(&[b'a', b'b', b'c', 0xFF]));
+    assert_eq!(
+        crc_with_ff_padding(b"abc", 4),
+        crc32(&[b'a', b'b', b'c', 0xFF])
+    );
 }
