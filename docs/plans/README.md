@@ -79,4 +79,4 @@
 - 완료 기준
 - 실제 완료 여부와 발견한 차이점
 
-필요하면 이후 `docs/plans/progress-*.md` 형태의 진행 로그 문서를 따로 추가해도 된다.
+진행 현황은 `docs/plans/progress.md` 단일 snapshot 파일로 유지한다.

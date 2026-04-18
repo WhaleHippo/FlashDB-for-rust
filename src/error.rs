@@ -18,10 +18,7 @@ pub enum AlignmentError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Error<E = core::convert::Infallible>
-where
-    E: Debug,
-{
+pub enum Error<E = core::convert::Infallible> {
     Storage(E),
     Decode(DecodeError),
     Alignment(AlignmentError),
