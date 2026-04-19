@@ -21,6 +21,8 @@
    - TSDB 구현 순서
 8. `07-testing-validation-and-rust-integration.md`
    - host simulation, crash test, hardware validation, Rust 예제
+9. `07.5-no-std-no-alloc-transition.md`
+   - core를 no_std + no_alloc로 재정렬하면서 host/Linux simulation을 유지하는 전환 계획
 
 ## 문서 사용 원칙
 
@@ -68,6 +70,9 @@
   - TS append/query/mount: `src/fdb_tsdb.c`
 - `07-testing-validation-and-rust-integration.md`
   - 원본 테스트/시뮬레이션: `tests/fdb_kvdb_tc.c`, `tests/fdb_tsdb_tc.c`, `src/fdb_file.c`
+- `07.5-no-std-no-alloc-transition.md`
+  - host/file simulation 철학: `src/fdb_file.c`, `docs/porting.md`
+  - Linux/host 테스트 기준: `tests/fdb_kvdb_tc.c`, `tests/fdb_tsdb_tc.c`
 
 ## 진행 관리 권장 방식
 
