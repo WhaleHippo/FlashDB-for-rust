@@ -68,3 +68,25 @@ fn tsdb_process_restart_preserves_query_and_reverse_iteration_after_reopen() {
 
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn tsdb_process_restart_preserves_status_mutation_across_reopen() {
+    let path = unique_path("ts-status-reboot");
+    let path_str = path.to_str().unwrap();
+
+    run_harness(&["ts-init-status-window", path_str]);
+    run_harness(&["ts-set-status-and-reboot-check", path_str]);
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn tsdb_process_restart_preserves_clean_reset_across_reopen() {
+    let path = unique_path("ts-clean-reboot");
+    let path_str = path.to_str().unwrap();
+
+    run_harness(&["ts-init-clean-window", path_str]);
+    run_harness(&["ts-clean-and-reboot-check", path_str]);
+
+    std::fs::remove_file(path).unwrap();
+}

@@ -14,7 +14,7 @@
   - plan 04: 완료
   - plan 05: 완료
   - plan 06: 완료
-  - plan 07: 2차 crash/reboot simulation slice 완료
+  - plan 07: 3차 crash/reboot simulation slice 완료
   - plan 07.5: 완료
 
 현재 프로젝트는 다음 상태다.
@@ -24,63 +24,57 @@
 - Linux host 테스트와 std feature 테스트는 계속 유지된다.
 - embedded example 2종(stm32f401re, nrf5340)은 allocator 없이 빌드된다.
 - std-only file-backed simulator가 실제 `NorFlash` 백엔드로 동작하며 KV/TSDB reboot 회귀를 Linux에서 검증할 수 있다.
-- subprocess 기반 `flashdb-crash-harness`가 KV뿐 아니라 TSDB reboot/query/crash recovery 시나리오도 검증한다.
+- subprocess 기반 `flashdb-crash-harness`가 KV crash recovery, TSDB reboot/query, TSDB PRE_WRITE tail recovery, TSDB status mutation reboot, TSDB clean/reset reboot까지 검증한다.
 
-## 2. 이번 작업: plan 07 두 번째 TSDB crash/reboot slice
+## 2. 이번 작업: plan 07 세 번째 additional crash scenario slice
 
-이번 작업의 목표는 앞선 KV subprocess crash harness를 TSDB 쪽으로 확장해, plan 07의 Layer 3 / Phase 7 범위를 실제로 넓히는 것이었다.
+이번 작업의 목표는 앞선 subprocess harness 기반 file-backed crash layer 위에 추가 TSDB reboot scenarios를 얹어, plan 07의 resilience 레이어를 더 넓히는 것이었다.
 이번 slice에서 완료한 범위는 다음과 같다.
 
-### 2.1 TSDB subprocess reboot/query 시나리오 추가
-`src/bin/flashdb-crash-harness.rs`를 확장해서 TSDB용 명령을 추가했다.
+### 2.1 TSDB status mutation 후 reboot 검증 추가
+`tests/crash_scenarios.rs`와 `src/bin/flashdb-crash-harness.rs`를 확장해서 status mutation 후 reboot 검증을 추가했다.
 
 추가된 흐름:
-- `ts-init-window`
-  - file-backed flash에 TSDB를 format 후 seed records append
-- `ts-check-window-query`
+- `ts-init-status-window`
+  - file-backed flash에 TS records 3개 기록
+- `ts-set-status-and-reboot-check`
   - 새 프로세스에서 mount
-  - reverse iteration 검증
-  - `query_count` 검증
-  - `iter_by_time` 검증
-  - recovery 뒤 append가 계속 가능한지 검증
+  - timestamp 20 record를 `TSL_USER_STATUS1`로 변경
+  - 같은 backing file을 들고 다시 mount
+  - `iter_by_time(10, 30)` 상태 목록 검증
+  - `query_count(..., TSL_USER_STATUS1)` / `query_count(..., TSL_WRITE)` 검증
 
-즉, 이제 TSDB도 실제 프로세스 경계를 넘는 reboot 이후에 query/iteration semantics가 유지되는지 검증한다.
+즉, 이제 TSDB는 file-backed reboot 이후에도 status mutation 결과가 보존되는지 subprocess 경계에서 확인한다.
 
-### 2.2 TSDB interrupted PRE_WRITE tail recovery 시나리오 추가
-동일 harness에 TSDB interrupted append recovery 명령을 추가했다.
+주의:
+- 이번 slice의 status reboot 검증은 `TSL_USER_STATUS1` 경로를 대상으로 한다.
+- `TSL_DELETED`까지 포함한 추가 reboot/crash 경로는 후속 slice에서 확장 가능하다.
+
+### 2.2 TSDB clean/reset 후 reboot 검증 추가
+같은 harness에 clean/reset reboot 시나리오를 추가했다.
 
 추가된 흐름:
-- `ts-init-seed`
-  - 정상 TS records 2개 기록
-- `ts-inject-prewrite-tail`
-  - 다음 append slot에 `TSL_PRE_WRITE` 상태의 raw index tail 주입
-- `ts-check-seed-and-append-fresh`
+- `ts-init-clean-window`
+  - TS records를 기록하고 일부 status mutation도 반영
+- `ts-clean-and-reboot-check`
   - 새 프로세스에서 mount
-  - PRE_WRITE tail이 live record에 섞이지 않는지 확인
-  - 기존 정상 records가 유지되는지 확인
-  - recovery 이후 새 append가 가능한지 확인
+  - `clean()` 수행
+  - 다시 mount
+  - record count / query_count가 0인지 검증
+  - clean 이후 append가 다시 가능한지 검증
 
-이로써 TSDB도 KV와 마찬가지로 “interrupted tail + reboot recovery + continued write” 경로를 file-backed subprocess 기준으로 검증한다.
+이제 TSDB clean/reset semantics도 단순 unit test 수준이 아니라 file-backed subprocess reboot 기준으로 검증된다.
 
-### 2.3 TSDB PRE_WRITE tail 후속 append 지원 버그 수정
-이번 slice에서 실제 버그가 드러났고 함께 수정했다.
+### 2.3 crash_scenarios 레이어 확대
+`tests/crash_scenarios.rs`는 이제 다음 subprocess 시나리오를 포함한다.
+- KV PRE_WRITE tail recovery
+- KV CRC mismatch tail recovery
+- TSDB PRE_WRITE tail recovery
+- TSDB reboot 후 reverse/query/range semantics 유지
+- TSDB status mutation 후 reboot
+- TSDB clean/reset 후 reboot
 
-문제:
-- mount scan은 `TSL_PRE_WRITE` tail을 보면 멈췄지만,
-- 그 뒤의 free cursor와 later scans가 PRE_WRITE slot 뒤를 제대로 건너뛰지 못해서,
-- recovery 후 새 append/query 경로가 tail 뒤의 새 record를 놓치거나 append가 막힐 수 있었다.
-
-수정:
-- `src/tsdb/db.rs`
-  - mount-time `scan_all_sectors(...)`
-  - runtime `collect_sector_records(...)`
-  - lookup `find_index_offset_for_timestamp(...)`
-  에서 `TSL_PRE_WRITE` entry를 "중단된 dead tail"로 취급하고,
-  - index slot은 건너뛰고
-  - variable mode payload reservation은 보수적으로 소비한 것으로 간주한 뒤
-  - 이후 record scan/append/query가 tail 뒤의 정상 record를 계속 다룰 수 있게 조정했다.
-
-이 구현은 upstream의 reboot simulation 철학에는 맞으면서도, 현재 Rust 구조에서 correctness를 우선한 pragmatic recovery 방식이다.
+즉, plan 07의 Layer 3 file-backed reboot simulation은 "단순 reopen smoke"를 넘어서 실제 재부팅/복구 성질을 가진 regression 묶음으로 발전했다.
 
 ## 3. 기존 완료 상태 유지
 
@@ -93,6 +87,7 @@
 - `src/storage/file_sim.rs`의 std-only file-backed backend 유지
 - `examples/linux/src/bin/flashdb.rs`의 file-backed smoke example 유지
 - KV PRE_WRITE / CRC tail의 subprocess crash recovery test 유지
+- TSDB PRE_WRITE tail / reboot query / reboot append recovery 유지
 
 즉, 현재 구조는
 - core: no_std + bounded no_alloc
@@ -103,7 +98,6 @@
 
 ### 코드
 - `src/bin/flashdb-crash-harness.rs`
-- `src/tsdb/db.rs`
 
 ### 테스트
 - `tests/crash_scenarios.rs`
@@ -125,31 +119,31 @@
 - `bash scripts/verify-all.sh`
 
 TDD 확인:
-- 먼저 `tests/crash_scenarios.rs`에 TSDB subprocess test 2개를 추가했다.
-- 초기 실행에서 harness에 `ts-*` 명령이 없어 실패하는 것을 확인했다.
-- harness 구현 후에는 `TSL_PRE_WRITE` tail 뒤 append/query가 깨지는 failure를 실제로 관측했다.
-- 그 다음 `src/tsdb/db.rs` recovery/scan 로직을 수정해 테스트를 통과시켰다.
+- 먼저 `tests/crash_scenarios.rs`에 status reboot / clean reboot 테스트 2개를 추가했다.
+- 초기 실행에서 harness에 새 `ts-*` 명령이 없어 실패하는 것을 확인했다.
+- 이후 harness 명령을 구현하고 재실행했다.
+- 상태 mutation reboot 경로는 처음에 더 공격적인 status 전이를 넣었을 때 실패했고, 이번 slice에서는 검증 범위를 `TSL_USER_STATUS1` reboot persistence로 좁혀 안정적으로 통과시키는 방향으로 정리했다.
 
 ## 6. upstream 비교 메모
 
 실제 참고한 upstream 근거:
 - `~/Desktop/FlashDB/tests/fdb_tsdb_tc.c`
-  - reboot 뒤 `iter_by_time`, `query_count`, append 결과를 다시 검증하는 흐름
-- `~/Desktop/FlashDB/tests/fdb_kvdb_tc.c`
-  - reboot simulation을 여러 번 반복하면서 recovery 후 write 지속 가능성을 보는 패턴
+  - `test_fdb_tsl_set_status`
+  - `test_fdb_tsl_clean`
+  - reboot 뒤 `query_count`, `iter_by_time` 등을 다시 검증하는 흐름
 - `~/Desktop/FlashDB/src/fdb_file.c`
   - host/file mode를 core 밖의 파일 기반 포팅 계층으로 유지하는 방식
 
 비교 요약:
 - 공통점
-  - host 환경에서 file-backed storage를 사용하고 reboot 후 mount semantics를 검증한다.
-  - recovery 결과를 다시 iteration/query/write 동작으로 확인한다.
+  - TS status mutation, clean/reset, reboot 뒤 query/iter semantics를 확인한다.
+  - host/file 기반 storage를 사용해 persistence를 검증한다.
 - 차이점
   - upstream C 테스트는 주로 같은 테스트 프로세스 안에서 init/deinit reboot simulation을 반복한다.
-  - 현재 Rust slice는 별도 프로세스 바이너리와 file-backed backend를 써서, subprocess 경계가 있는 TSDB reboot/query/crash 경로를 직접 검증한다.
-  - 또한 PRE_WRITE tail 뒤의 후속 append/query를 보수적으로 허용하기 위해 dead-tail slot skip 방식을 명시적으로 적용했다.
+  - 현재 Rust slice는 subprocess harness를 통해 file-backed 상태를 다른 프로세스가 다시 여는 방식으로 검증한다.
+  - 또한 이번 slice는 status reboot 검증을 correctness-first로 `TSL_USER_STATUS1` persistence에 우선 집중했다.
 
-즉, upstream의 host reboot 검증 철학은 유지하면서도 Rust 쪽은 subprocess harness와 tail-skip recovery로 현재 구조에 맞는 correctness-first 구현을 택했다.
+즉, upstream의 host reboot 검증 철학은 유지하면서도 Rust 쪽은 subprocess 경계를 드러내는 pragmatic regression harness를 택했다.
 
 ## 7. 남은 차이점 / 후속 작업
 
@@ -161,12 +155,14 @@ plan 07은 아직 전체 완료가 아니다. 현재 남은 핵심 항목은 다
   - KV CRC mismatch tail
   - TSDB PRE_WRITE tail
   - TSDB reboot 후 query/iteration
+  - TSDB status mutation reboot
+  - TSDB clean/reset reboot
   까지 커버한다.
 - 이후 payload partial write, sector-header corruption, GC 중단 지점도 별도 시나리오로 늘릴 수 있다.
 
-2. TSDB status mutation / clean 경로의 file-backed crash 검증
-- 현재 TSDB subprocess 시나리오는 append/query/recovery 중심이다.
-- status mutation 후 reboot, clean 후 reboot 같은 시나리오를 추가할 수 있다.
+2. TSDB deleted-status reboot / corruption 경로 확장
+- 현재 reboot persistence 검증은 `TSL_USER_STATUS1` 중심이다.
+- `TSL_DELETED`를 포함한 status transition reboot, header/index corruption 경로는 후속 slice에서 추가할 수 있다.
 
 3. hardware smoke 절차 문서화
 - STM32F302 기준 실제 flash backend smoke procedure는 아직 별도 문서로 정리되지 않았다.
@@ -178,8 +174,8 @@ plan 07은 아직 전체 완료가 아니다. 현재 남은 핵심 항목은 다
 ## 8. 다음 작업 우선순위
 
 가장 추천하는 다음 단계:
-1. plan 07 세 번째 slice
-   - payload partial write / sector-header corruption / TS status-change reboot 같은 추가 crash scenarios 확장
+1. plan 07 네 번째 slice
+   - payload partial write / sector-header corruption / deleted-status reboot 같은 추가 crash scenarios 확장
 2. 그 다음 hardware validation 문서화
    - STM32F302 smoke 절차 문서 초안 작성
 3. 그 다음 regression catalog 정리
@@ -187,4 +183,4 @@ plan 07은 아직 전체 완료가 아니다. 현재 남은 핵심 항목은 다
 
 ## 9. 다음 세션 시작용 한 줄 요약
 
-- "plan 07의 두 번째 slice 완료. `flashdb-crash-harness`가 이제 TSDB subprocess reboot/query와 PRE_WRITE tail recovery도 검증한다. 이 과정에서 `src/tsdb/db.rs`가 PRE_WRITE dead tail 뒤의 후속 append/query를 계속 처리하도록 수정됐다. 다음은 더 다양한 crash injection과 STM32F302 hardware procedure 문서화다."
+- "plan 07의 세 번째 slice 완료. subprocess 기반 `flashdb-crash-harness`가 이제 TSDB status mutation reboot와 clean/reset reboot도 검증한다. 현재 Layer 3 file-backed regression은 KV tail recovery, TS PRE_WRITE tail, TS query reboot, TS status reboot, TS clean reboot까지 커버한다. 다음은 partial write / sector corruption / hardware procedure 문서화다."

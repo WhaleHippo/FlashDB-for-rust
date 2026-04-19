@@ -18,8 +18,8 @@ fn real_main() -> Result<(), String> {
     use flashdb_for_rust::layout::common::ERASED_BYTE;
     use flashdb_for_rust::layout::kv::{KV_PRE_WRITE, KV_WRITE, KvLayout, KvRecordHeader};
     use flashdb_for_rust::layout::ts::{
-        SECTOR_STORE_EMPTY, SECTOR_STORE_FULL, SECTOR_STORE_USING, TSL_PRE_WRITE, TSL_WRITE,
-        TsIndexHeader, TsLayout, TsSectorHeader,
+        SECTOR_STORE_EMPTY, SECTOR_STORE_FULL, SECTOR_STORE_USING, TSL_PRE_WRITE, TSL_USER_STATUS1,
+        TSL_WRITE, TsIndexHeader, TsLayout, TsSectorHeader,
     };
     use flashdb_for_rust::storage::{FileFlashSimulator, NorFlashRegion, StorageRegion};
     use flashdb_for_rust::tsdb::TsDb;
@@ -438,6 +438,104 @@ fn real_main() -> Result<(), String> {
             }
             db.append(40, b"four")
                 .map_err(|err| format!("append 40: {err:?}"))?;
+        }
+        "ts-init-status-window" => {
+            let mut db = TsDb::mount(open_flash(&path)?, ts_config())
+                .map_err(|err| format!("mount ts: {err:?}"))?;
+            db.format().map_err(|err| format!("format ts: {err:?}"))?;
+            for (timestamp, payload) in [
+                (10_u64, b"one".as_slice()),
+                (20, b"two".as_slice()),
+                (30, b"three".as_slice()),
+            ] {
+                db.append(timestamp, payload)
+                    .map_err(|err| format!("append status window {timestamp}: {err:?}"))?;
+            }
+        }
+        "ts-set-status-and-reboot-check" => {
+            let mut db = TsDb::mount(open_flash(&path)?, ts_config())
+                .map_err(|err| format!("mount ts: {err:?}"))?;
+            db.set_status(20, TSL_USER_STATUS1)
+                .map_err(|err| format!("set_status user1: {err:?}"))?;
+            let flash = db.into_flash();
+            let mut rebooted =
+                TsDb::mount(flash, ts_config()).map_err(|err| format!("remount ts: {err:?}"))?;
+            let records = rebooted
+                .iter_by_time(10, 30)
+                .map_err(|err| format!("iter_by_time after status: {err:?}"))?
+                .collect::<Vec<_>>();
+            let statuses = records
+                .iter()
+                .map(|record| record.status)
+                .collect::<Vec<_>>();
+            if statuses != vec![TSL_WRITE, TSL_USER_STATUS1, TSL_WRITE] {
+                return Err(format!(
+                    "expected statuses [WRITE, USER1, WRITE], got {statuses:?}"
+                ));
+            }
+            let user1_count = rebooted
+                .query_count(10, 30, TSL_USER_STATUS1)
+                .map_err(|err| format!("query_count user1: {err:?}"))?;
+            let write_count = rebooted
+                .query_count(10, 30, TSL_WRITE)
+                .map_err(|err| format!("query_count write: {err:?}"))?;
+            if user1_count != 1 || write_count != 2 {
+                return Err(format!(
+                    "expected user1=1 and write=2, got user1={user1_count}, write={write_count}"
+                ));
+            }
+        }
+        "ts-init-clean-window" => {
+            let mut db = TsDb::mount(open_flash(&path)?, ts_config())
+                .map_err(|err| format!("mount ts: {err:?}"))?;
+            db.format().map_err(|err| format!("format ts: {err:?}"))?;
+            db.append(10, b"one")
+                .map_err(|err| format!("append clean 10: {err:?}"))?;
+            db.append(20, b"two")
+                .map_err(|err| format!("append clean 20: {err:?}"))?;
+            db.set_status(20, TSL_USER_STATUS1)
+                .map_err(|err| format!("set_status clean: {err:?}"))?;
+        }
+        "ts-clean-and-reboot-check" => {
+            let mut db = TsDb::mount(open_flash(&path)?, ts_config())
+                .map_err(|err| format!("mount ts: {err:?}"))?;
+            db.clean().map_err(|err| format!("clean ts: {err:?}"))?;
+            let flash = db.into_flash();
+            let mut rebooted =
+                TsDb::mount(flash, ts_config()).map_err(|err| format!("remount ts: {err:?}"))?;
+            let count = rebooted
+                .iter()
+                .map_err(|err| format!("iter after clean: {err:?}"))?
+                .count();
+            if count != 0 {
+                return Err(format!(
+                    "expected 0 records after clean reboot, got {count}"
+                ));
+            }
+            let query_count = rebooted
+                .query_count(0, 100, TSL_WRITE)
+                .map_err(|err| format!("query_count after clean: {err:?}"))?;
+            if query_count != 0 {
+                return Err(format!(
+                    "expected 0 live records after clean reboot, got {query_count}"
+                ));
+            }
+            rebooted
+                .append(30, b"three")
+                .map_err(|err| format!("append after clean reboot: {err:?}"))?;
+            let records = rebooted
+                .iter()
+                .map_err(|err| format!("iter after clean append: {err:?}"))?
+                .collect::<Vec<_>>();
+            if records.len() != 1 || records[0].timestamp != 30 {
+                return Err(format!(
+                    "expected single timestamp 30 after clean append, got {:?}",
+                    records
+                        .iter()
+                        .map(|record| record.timestamp)
+                        .collect::<Vec<_>>()
+                ));
+            }
         }
         other => return Err(format!("unknown command: {other}")),
     }
