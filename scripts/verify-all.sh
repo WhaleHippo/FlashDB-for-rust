@@ -17,7 +17,12 @@ fi
   cd "$repo_root/examples/nrf5340"
   cargo fmt --check
 )
+(
+  cd "$repo_root/examples/linux"
+  cargo fmt --check
+)
 cargo test
 cargo test --features std
+cargo run --manifest-path examples/linux/Cargo.toml --bin flashdb
 cargo build --manifest-path examples/stm32f401re/Cargo.toml --bin flashdb --target thumbv7em-none-eabihf
 cargo build --manifest-path examples/nrf5340/Cargo.toml --bin flashdb --target thumbv8m.main-none-eabihf

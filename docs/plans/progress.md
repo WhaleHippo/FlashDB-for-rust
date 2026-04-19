@@ -23,6 +23,7 @@
 - core `src/`는 `extern crate alloc` 및 `alloc::` 의존 없이 동작한다.
 - Linux host 테스트와 std feature 테스트는 계속 유지된다.
 - embedded example 2종(stm32f401re, nrf5340)은 allocator 없이 다시 빌드된다.
+- Linux host example 1종(`examples/linux`)이 추가되어 std 환경에서 KV/TS smoke flow를 직접 실행할 수 있다.
 
 ## 2. 이번 작업: plan 07.5 1차 no_alloc 전환
 
@@ -130,6 +131,8 @@
 - `examples/stm32f401re/src/bin/flashdb.rs`
 - `examples/nrf5340/Cargo.toml`
 - `examples/nrf5340/src/bin/flashdb.rs`
+- `examples/linux/Cargo.toml`
+- `examples/linux/src/bin/flashdb.rs`
 
 ### 검증 스크립트 / 문서
 - `scripts/verify-all.sh`
@@ -142,11 +145,12 @@
 - `cargo test`
 - `cargo test --features std`
 - `cargo test --test no_alloc_bounds`
+- `cargo run --manifest-path examples/linux/Cargo.toml --bin flashdb`
 - `cargo build --manifest-path examples/stm32f401re/Cargo.toml --bin flashdb --target thumbv7em-none-eabihf`
 - `cargo build --manifest-path examples/nrf5340/Cargo.toml --bin flashdb --target thumbv8m.main-none-eabihf`
 - `bash scripts/verify-all.sh`
 
-또한 `scripts/verify-all.sh`는 이제 `src/` 아래에 `extern crate alloc` / `alloc::`가 남아 있으면 실패하도록 점검한다.
+또한 `scripts/verify-all.sh`는 이제 `src/` 아래에 `extern crate alloc` / `alloc::`가 남아 있으면 실패하도록 점검하고, Linux host example 포맷/실행도 함께 검증한다.
 
 ## 5. upstream 비교 메모
 

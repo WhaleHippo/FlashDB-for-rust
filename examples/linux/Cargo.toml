@@ -1,0 +1,8 @@
+[package]
+name = "flashdb-for-rust-linux-example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+flashdb-for-rust = { path = "../..", features = ["std"] }
