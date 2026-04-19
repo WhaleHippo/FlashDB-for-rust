@@ -4,7 +4,6 @@
 use defmt::info;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
-use embedded_alloc::LlffHeap;
 use flashdb_for_rust::kv::KvDb;
 use flashdb_for_rust::storage::MockFlash;
 use flashdb_for_rust::storage::mock::MockFlashError;
@@ -14,17 +13,10 @@ use flashdb_for_rust::{
 };
 use {defmt_rtt as _, panic_probe as _};
 
-#[global_allocator]
-static ALLOCATOR: LlffHeap = LlffHeap::empty();
-
-const HEAP_SIZE: usize = 32 * 1024;
-static mut HEAP_MEM: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
-
 type ExampleFlash = MockFlash<4096, 4, 1024>;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    init_heap();
     let _p = embassy_nrf::init(Default::default());
 
     info!("nRF5340 FlashDB embedded example start");
@@ -33,12 +25,6 @@ async fn main(_spawner: Spawner) {
 
     loop {
         Timer::after(Duration::from_secs(1)).await;
-    }
-}
-
-fn init_heap() {
-    unsafe {
-        ALLOCATOR.init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE);
     }
 }
 
@@ -60,10 +46,8 @@ fn run_flashdb_smoke() -> Result<(), FlashError<MockFlashError>> {
     ts.append(1, b"cold")?;
     ts.append(2, b"warm")?;
 
-    let mut reverse = ts.iter_reverse()?;
-    let Some(latest) = reverse.next() else {
-        panic!("missing TS record");
-    };
+    let reverse = ts.iter_reverse()?;
+    let latest = reverse.into_iter().next().expect("missing TS record");
     if latest.timestamp != 2 || latest.payload.as_slice() != b"warm" {
         panic!("unexpected TS payload");
     }

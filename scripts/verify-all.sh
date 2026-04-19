@@ -5,6 +5,10 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 
 cd "$repo_root"
 cargo fmt --check
+if grep -R -n -E 'extern crate alloc|alloc::' src; then
+  echo "unexpected alloc usage remains in src/"
+  exit 1
+fi
 (
   cd "$repo_root/examples/stm32f401re"
   cargo fmt --check

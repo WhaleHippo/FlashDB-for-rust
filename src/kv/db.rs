@@ -1,7 +1,7 @@
 use embedded_storage::nor_flash::NorFlash;
 
 use crate::blob::locator::KvValueLocator;
-use crate::config::KvConfig;
+use crate::config::{KvConfig, MAX_KV_KEY_LEN, MAX_KV_RECORDS, MAX_KV_VALUE_LEN};
 use crate::error::{Error, Result};
 use crate::layout::kv::{KV_DELETED, KV_PRE_DELETE, KV_WRITE, KvLayout, SECTOR_DIRTY_TRUE};
 use crate::storage::{NorFlashRegion, StorageRegion};
@@ -92,9 +92,15 @@ where
     pub fn set(&mut self, key: &str, value: &[u8]) -> Result<(), F::Error> {
         let key_bytes = key.as_bytes();
         self.validate_key_value(key_bytes, value)?;
+        let existing = scan::lookup_key(&mut self.storage, &self.layout, key_bytes)?;
+        if existing.is_none() && self.live_record_count()? >= MAX_KV_RECORDS {
+            return Err(Error::InvariantViolation(
+                "KV live record count exceeds bounded no_alloc snapshot capacity",
+            ));
+        }
         gc::ensure_space_for_record(self, key_bytes.len(), value.len())?;
 
-        if let Some(existing) = scan::lookup_key(&mut self.storage, &self.layout, key_bytes)? {
+        if let Some(existing) = existing {
             let sector_base = self.sector_base(existing.record_offset);
             super::recovery::commit_record_status(
                 &mut self.storage,
@@ -338,5 +344,15 @@ where
 
     fn sector_base(&self, offset: u32) -> u32 {
         (offset / self.storage.region().erase_size()) * self.storage.region().erase_size()
+    }
+
+    fn live_record_count(&mut self) -> Result<usize, F::Error> {
+        let mut count = 0usize;
+        let mut key_buf = [0u8; MAX_KV_KEY_LEN];
+        let mut value_buf = [0u8; MAX_KV_VALUE_LEN];
+        self.for_each_live_record(&mut key_buf, &mut value_buf, |_, _| {
+            count += 1;
+        })?;
+        Ok(count)
     }
 }

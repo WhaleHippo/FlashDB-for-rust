@@ -5,7 +5,7 @@
 
 ## 1. 현재 기준점
 
-- 현재 진행 기준: `docs/plans/07.5-no-std-no-alloc-transition.md` 문서화 완료
+- 현재 진행 기준: `docs/plans/07.5-no-std-no-alloc-transition.md`
 - 전체 진행 위치:
   - plan 00: 해석 완료
   - plan 01: 완료
@@ -15,229 +15,183 @@
   - plan 05: 완료
   - plan 06: 완료
   - plan 07: 부분 진행
-  - plan 07.5: 문서화 완료
-  - 이후 구현 단계: 미구현
+  - plan 07.5: 1차 구현 slice 완료
 
-즉, 현재 프로젝트는:
-- KVDB 쪽은 MVP + recovery/GC/iterator/integrity까지 구현 및 검증 완료 상태이고,
-- TSDB 쪽은 variable/fixed blob mode 기준 mount/append/query/rollover/clean/reset까지 plan 06 완료 기준을 충족한 상태다.
-- 추가로 embedded example crate 2종(stm32f401re, nrf5340)에서 FlashDB smoke example이 빌드되는 검증 경로가 생겼다.
+현재 프로젝트는 다음 상태다.
+- KVDB: MVP + recovery/GC/iterator/integrity까지 유지된다.
+- TSDB: variable/fixed blob mode, forward/reverse/range query, status mutation, clean/reset, rollover on/off, reboot 복원까지 유지된다.
+- core `src/`는 `extern crate alloc` 및 `alloc::` 의존 없이 동작한다.
+- Linux host 테스트와 std feature 테스트는 계속 유지된다.
+- embedded example 2종(stm32f401re, nrf5340)은 allocator 없이 다시 빌드된다.
 
-## 2. plan 06 마지막 마무리 내용
+## 2. 이번 작업: plan 07.5 1차 no_alloc 전환
 
-이번 작업에서는 progress snapshot에 남아 있던 plan 06의 마지막 공백을 메웠다.
-핵심은 다음 두 가지였다.
+이번 작업의 목표는 plan 07.5를 문서 상태에서 실제 코드 리팩토링 단계로 옮기는 것이었다.
+완료한 범위는 다음과 같다.
 
-1. rollover on/off 정책 완성
-2. fixed-size blob mode 구현 및 reboot 복원 검증
+### 2.1 core `alloc` 제거
+- `src/lib.rs`의 `extern crate alloc` 제거
+- `src/kv/*`, `src/tsdb/*`의 `alloc::vec`, `alloc::string` 제거
+- 동적 할당 대신 `heapless` 기반 bounded container로 치환
 
-### 2.1 TSDB rollover 정책 완료
-`src/tsdb/db.rs`를 확장해 sector full 이후의 next-sector 선택을 plan 06 완료 기준에 맞게 마무리했다.
+핵심 변화:
+- `KvOwnedRecord`
+  - `String` -> `heapless::String<MAX_KV_KEY_LEN>`
+  - `Vec<u8>` -> `heapless::Vec<u8, MAX_KV_VALUE_LEN>`
+- `TsOwnedRecord`
+  - payload -> `heapless::Vec<u8, MAX_TS_PAYLOAD_LEN>`
+- TSDB sector runtime table
+  - heap `Vec` -> `heapless::Vec<TsSectorRuntime, MAX_TS_SECTORS>`
 
-구현된 내용:
-- `TsdbConfig`에 `rollover: bool` 추가
-- `rollover=false`일 때 마지막 sector까지 가득 차면 `Error::NoSpace` 반환
-- `rollover=true`일 때 다음 sector를 ring처럼 순환 선택
-- 순환 대상 sector가 기존 데이터를 가지고 있으면 erase 후 재사용
-- wrap 이후에도
-  - `oldest_sector`
-  - `current_sector`
-  - `last_timestamp`
-  이 올바르게 유지되도록 조정
-- TSDB snapshot/lookup 순회가 물리 sector 0..N 고정 순서가 아니라, `oldest_sector`부터 ring 순서로 순회하도록 수정
+즉, 현재 core는 heap allocator 없이도 동작하지만,
+완전한 무제한 동적 크기 대신 "bounded no_alloc" 방식으로 정리되었다.
 
-원본 FlashDB 비교 메모:
-- upstream `src/fdb_tsdb.c`의 `update_sec_status`, `tsl_append`, sector wrap 흐름을 기준으로 구현했다.
-- Rust 구현도 sector full 후 next sector를 선택하고, rollover=true일 때 앞쪽 sector를 재사용하는 핵심 의미를 맞췄다.
-- 다만 upstream은 sector header의 `end_info[0/1]`를 append 경로에서 적극 활용하지만,
-  현재 Rust 구현은 mount 시 index area를 다시 스캔해서 runtime state를 복원하는 보수적 방식을 유지한다.
-- 즉, rollover semantics는 맞췄고, sector-header 기반 최적화는 후속 parity/optimization 항목으로 남겨두었다.
+### 2.2 no_alloc 경계용 bounded runtime cap 도입
+`src/config.rs`에 다음 bounded cap을 추가하고 validation에 연결했다.
+- `MAX_KV_KEY_LEN`
+- `MAX_KV_VALUE_LEN`
+- `MAX_KV_RECORDS`
+- `MAX_TS_PAYLOAD_LEN`
+- `MAX_TS_RECORDS`
+- `MAX_TS_SECTORS`
+- `MAX_RUNTIME_WRITE_SIZE`
+- `MAX_TS_HEADER_LEN`
+- `MAX_TS_INDEX_LEN`
 
-### 2.2 fixed-size blob mode 구현
-기존에는 `BlobMode::Fixed(_)`가 TSDB에서 아예 거부되었는데, 이번에 실제 동작하도록 연결했다.
+검증되는 것:
+- KV key/value 길이가 no_alloc bounded cap을 넘으면 reject
+- TS fixed blob 길이가 bounded payload cap을 넘으면 reject
+- region write size / sector count가 bounded runtime cap을 넘으면 reject
+- KV 신규 live key 수가 bounded snapshot cap을 넘기기 전에 reject
+- TS variable payload가 bounded payload cap을 넘으면 reject
+- TS append 수가 bounded snapshot cap을 넘기기 전에 reject
 
-구현된 내용:
-- `BlobMode::Fixed(len)` -> `TsBlobMode::Fixed(len as u32)` 매핑 허용
-- fixed mode에서 index에는 timestamp/status만 기록하고,
-  payload 위치는 sector 내부 고정 slot 계산으로 복원
-- append 시 payload 길이가 fixed size와 정확히 일치해야 하도록 검증
-- iter / iter_reverse / mount recovery가 fixed mode payload를 올바르게 읽도록 수정
-- reboot 후에도 fixed mode record가 정상 복원되는 테스트 추가
+이 방식은 plan 07.5의 "bounded memory 우선" 원칙에는 맞고,
+향후 caller-provided scratch / streaming API로 더 일반화할 여지는 남겨 둔다.
 
-원본 FlashDB 비교 메모:
-- upstream `read_tsl`이 fixed-size 모드에서 index address로 sector 내 payload 위치를 역산하는 방식을 참고했다.
-- 현재 Rust 구현도 동일한 방향으로, index에 log_addr/log_len을 저장하지 않고 slot 계산으로 payload 위치를 복원한다.
-- 즉, fixed-size payload 위치 계산 방식은 upstream 구조와 본질적으로 동일하다.
+### 2.3 TSDB/KV iterator와 snapshot의 no_alloc 정렬
+완전한 streaming iterator로 아직 바꾸지는 않았지만,
+현재 snapshot/iterator 경로는 더 이상 heap allocation에 의존하지 않는다.
 
-### 2.3 full sector mount/recovery 보정
-rollover + fixed mode를 붙이는 과정에서 sector가 index/data 경계까지 꽉 찬 경우 reboot scan이 payload 영역을 추가 index로 오해할 수 있는 경계 문제가 드러났다.
+구체적으로:
+- KV iterator snapshot은 bounded `heapless::Vec`로 유지
+- KV GC live-set snapshot도 같은 bounded container를 재사용
+- TSDB record snapshot도 bounded `heapless::Vec` 기반으로 유지
+- 테스트는 새 bounded record 타입에 맞게 `.as_slice()` 비교로 조정
 
-조정한 내용:
-- mount scan이 단순히 sector 끝까지 index를 읽는 것이 아니라,
-  현재 계산된 `empty_data_offset`과 겹치지 않는 범위까지만 index를 읽도록 수정
-- 덕분에 full sector 상태에서도 reboot 후 `Decode(InvalidState)` 없이 정상 복원됨
+즉, 이번 slice는 "heap 제거"가 목적이고,
+다음 slice에서 필요하면 iterator/query/GC를 caller-provided buffer나 streaming scan 쪽으로 더 밀어낼 수 있다.
 
-이 부분은 upstream의 `remain`, `empty_idx`, `empty_data` 관리 의미와 맞닿아 있으며,
-현재 Rust 구현에서도 동일한 dual-ended layout invariant를 더 정확히 지키도록 만든 수정이다.
-
-## 3. plan 06 완료 판단
-
-이제 plan 06의 완료 기준은 충족했다고 판단한다.
-
-문서의 완료 기준:
-- append 후 forward iter 정상
-- reverse iter 정상
-- time-range query 정상
-- rollover on/off 정책 정상
-- clean/reset 정상
-- reboot 후 current/oldest/last_time 복원 가능
-
-현재 상태:
-- forward iteration: 완료
-- reverse iteration: 완료
-- iter_by_time / query_count: 완료
-- status mutation: 완료
-- clean/reset: 완료
-- rollover=false no-space 정책: 완료
-- rollover=true ring overwrite 정책: 완료
-- reboot 후 current/oldest/last_timestamp 복원: 완료
-- fixed-size blob mode: 구현 완료
-
-따라서 plan 06은 더 이상 "진행 중"이 아니라 완료로 옮긴다.
-
-## 4. embedded example build 검증 추가
-
-이번에 별도 example crate 2개를 정리했다.
-
-대상:
+### 2.4 embedded example allocator 제거
+다음 두 embedded smoke example에서 allocator 초기화와 `embedded-alloc` 의존을 제거했다.
 - `examples/stm32f401re`
 - `examples/nrf5340`
 
-추가/정리한 내용:
-- 각 crate의 `src/bin/flashdb.rs`를 실제 Embassy 엔트리포인트로 완성
-- 두 example 모두 RAM 위의 `MockFlash` backend를 사용해
-  - `KvDb::mount` / `format` / `set` / `get_blob_into`
-  - `TsDb::mount` / `format` / `append` / `iter_reverse`
-  를 no_std embedded binary 안에서 smoke-test 하도록 구성
-- 각 example crate에 `.cargo/config.toml` 추가
-  - stm32f401re -> `thumbv7em-none-eabihf`
-  - nrf5340 -> `thumbv8m.main-none-eabihf`
-- root 검증 스크립트 `scripts/verify-all.sh` 추가
-  - root fmt/test/std-test
-  - example crate fmt check
-  - stm32 flashdb build
-  - nrf flashdb build
-  를 한 번에 수행하도록 정리
+결과:
+- 두 example 모두 allocator 없는 상태에서 빌드 통과
+- smoke 동작은 그대로 유지
+  - KV mount/format/set/get
+  - TS mount/format/append/reverse check
 
-의도적으로 명시하는 제한:
-- 현재 example은 실제 MCU 내장 flash driver를 쓰는 예제가 아니라,
-  embedded 환경에서 crate가 allocator + no_std + Embassy executor 조합으로 빌드되는지 확인하는 smoke example이다.
-- 즉, "실기 펌웨어로 빌드 가능함"을 검증하는 용도이며,
-  아직 실제 internal/external flash peripheral backend를 직접 구동하는 보드 예제는 아니다.
+### 2.5 host simulation / std-only support 유지
+`src/storage/file_sim.rs`는 그대로 std-only support layer로 남겨 두었다.
+이 방향은 upstream FlashDB의 porting guide와 file mode 철학과 맞춘 것이다.
 
-## 5. 이번에 수정된 파일
+실제 참고한 upstream 근거:
+- `~/Desktop/FlashDB/docs/porting.md`
+  - core DB 위에 flash `read`/`write`/`erase` 포팅 계층을 붙이는 구조를 설명
+- `~/Desktop/FlashDB/src/fdb_file.c`
+  - host/file mode를 core logic 바깥의 파일 기반 포팅 계층으로 유지
+
+현재 Rust 쪽도 같은 방향으로,
+- core는 allocator 없는 bounded no_std 쪽으로 정렬하고
+- host/file simulation은 std-only support로 남기는 구조를 유지한다.
+
+## 3. 이번에 수정된 파일
 
 ### 코드
+- `Cargo.toml`
+- `src/lib.rs`
 - `src/config.rs`
+- `src/kv/db.rs`
+- `src/kv/iter.rs`
+- `src/tsdb/iter.rs`
 - `src/tsdb/db.rs`
-- `examples/stm32f401re/src/bin/flashdb.rs`
-- `examples/nrf5340/src/bin/flashdb.rs`
 
-### 테스트/검증
+### 테스트
 - `tests/config_validation.rs`
+- `tests/no_alloc_bounds.rs`
+- `tests/kv_plan05.rs`
 - `tests/ts_basic.rs`
 - `tests/ts_rollover.rs`
-- `scripts/verify-all.sh`
 
-### example manifest / config
+### examples
 - `examples/stm32f401re/Cargo.toml`
-- `examples/stm32f401re/.cargo/config.toml`
+- `examples/stm32f401re/src/bin/flashdb.rs`
 - `examples/nrf5340/Cargo.toml`
-- `examples/nrf5340/.cargo/config.toml`
-- `.gitignore`
+- `examples/nrf5340/src/bin/flashdb.rs`
 
-### 문서
-- `docs/plans/README.md`
-- `docs/plans/07.5-no-std-no-alloc-transition.md`
+### 검증 스크립트 / 문서
+- `scripts/verify-all.sh`
 - `docs/plans/progress.md`
 
-## 6. no_std / no_alloc 전환 계획 문서화
+## 4. 검증 결과
 
-이번에 `docs/plans/07.5-no-std-no-alloc-transition.md`를 추가했다.
-
-이 문서의 역할:
-- 이 라이브러리를 임베디드 중심 `no_std` + `no_alloc` core로 재정렬한다는 방향을 고정
-- alloc 제거가 Linux/host 테스트 포기와 동의어가 아니라는 점을 명시
-- core / host simulation / embedded build verification를 분리하는 구조를 정의
-- 이후 실제 구현 task가 어떤 순서로 alloc 제거를 진행해야 하는지 안내
-
-핵심 결론:
-- core는 `no_std` + `no_alloc`을 목표로 한다.
-- Linux 상의 빠른 테스트는 계속 유지한다.
-- 방법은 core와 host porting layer(file/mock simulation)를 분리하는 것이다.
-- 즉, 원본 FlashDB의 file mode/porting layer와 유사한 철학을 Rust 쪽에서 더 엄격한 메모리 제약으로 재구성한다.
-
-이 문서는 아직 구현 완료 보고가 아니라,
-plan 07을 실행 가능한 하위 계획으로 쪼개 둔 설계 문서다.
-
-## 7. 테스트/빌드로 검증된 것
-
-이번 작업도 TDD/실패 재현 후 수정 방식으로 진행했다.
-
-먼저 실패를 확인한 검증:
-- `cargo build --bin flashdb --target thumbv7em-none-eabihf` in `examples/stm32f401re`
-- `cargo build --bin flashdb --target thumbv8m.main-none-eabihf` in `examples/nrf5340`
-  - 처음에는 root crate package 이름 오타(`flasbdb-for-rust`) 때문에 즉시 실패함을 확인
-  - 이후 executor feature 오타와 example 내부 타입/allocator 문제를 차례로 수정
-
-최종 통과한 검증:
-- `cargo test --test ts_rollover`
+이번 작업에서 통과한 검증:
 - `cargo fmt`
 - `cargo test`
 - `cargo test --features std`
+- `cargo test --test no_alloc_bounds`
 - `cargo build --manifest-path examples/stm32f401re/Cargo.toml --bin flashdb --target thumbv7em-none-eabihf`
 - `cargo build --manifest-path examples/nrf5340/Cargo.toml --bin flashdb --target thumbv8m.main-none-eabihf`
-- `scripts/verify-all.sh`
+- `bash scripts/verify-all.sh`
 
-직접 검증된 핵심 시나리오:
-- TSDB rollover/fixed-mode 회귀 없음
-- root crate 전체 unit/integration test 회귀 없음
-- STM32F401RE Embassy binary에서 FlashDB smoke example이 실제 embedded target으로 링크까지 완료됨
-- nRF5340 app core Embassy binary에서도 동일 smoke example이 실제 embedded target으로 링크까지 완료됨
-- 앞으로는 `scripts/verify-all.sh`를 기준 검증 루틴으로 사용하면 embedded build까지 함께 확인 가능함
+또한 `scripts/verify-all.sh`는 이제 `src/` 아래에 `extern crate alloc` / `alloc::`가 남아 있으면 실패하도록 점검한다.
 
-## 8. 남아 있는 차이점과 후속 작업 성격
+## 5. upstream 비교 메모
 
-plan 06 완료와 별개로, upstream 대비 아직 남아 있는 차이점은 있다.
-다만 이것들은 현재 문서의 완료 기준을 막는 필수 공백은 아니라서 plan 07 이전의 최적화/패리티 개선 항목으로 본다.
+이번 리팩토링은 upstream 동작 의미를 바꾸려는 작업이 아니었다.
+의도는 semantics를 유지한 채 메모리 모델을 바꾸는 것이었다.
 
-대표 차이점:
-- append 시 sector header `end_info[0/1]`를 upstream처럼 증분 갱신하지 않음
-- mount 시 sector header 정보만으로 끝내지 않고 index area 재스캔으로 runtime state를 복원함
-- `iter_by_time` / `query_count`가 sector-level coarse filtering + 내부 search 최적화보다 correctness-first full scan에 가까움
-- `set_status(...)` public API가 upstream의 `fdb_tsl_t` 핸들 기반이 아니라 timestamp lookup 기반임
-- embedded example은 아직 실제 hardware flash backend가 아니라 `MockFlash` 기반 smoke verification임
+비교 요약:
+- KV/TSDB의 기존 동작 semantics는 그대로 유지했다.
+- host simulation을 core 밖의 std-only support로 두는 방향은 upstream `docs/porting.md` / `src/fdb_file.c`의 porting/file mode 철학과 일치한다.
+- 다만 현재 Rust 구현은 upstream C처럼 런타임 크기 자유도를 그대로 가져가기보다,
+  bounded no_alloc cap을 먼저 두는 Rust-first 방식으로 정리했다.
 
-즉, semantics는 plan 06 완료 수준에 도달했고,
-앞으로 남은 것은 주로 upstream parity, 실제 flash backend, 성능 최적화 성격이다.
+즉, 이번 slice는 "upstream 포팅 계층 분리 철학 유지 + Rust no_alloc bounded memory 적용"으로 보는 것이 정확하다.
 
-## 9. 다음 작업 우선순위
+## 6. 남은 차이점 / 후속 작업
+
+plan 07.5가 완전히 끝난 것은 아니다. 현재 남은 핵심 항목은 다음과 같다.
+
+1. bounded cap 완화/재설계
+- 현재는 `heapless` 기반 고정 상한을 둔 상태다.
+- 더 일반적인 API로 가려면 caller-provided scratch / streaming iterator / callback scan 쪽으로 추가 리팩토링이 필요하다.
+
+2. KV GC의 snapshot 의존 축소
+- 현재 GC는 no_alloc이긴 하지만 bounded live-set snapshot을 사용한다.
+- 이후 필요하면 더 upstream-like 하거나 더 streaming-friendly 한 compacting/sector-copy 전략으로 바꿀 수 있다.
+
+3. TSDB iterator/query의 snapshot 의존 축소
+- 현재 TSDB iter/query도 heapless snapshot 기반이다.
+- correctness는 유지되지만, 완전한 no_alloc-friendly API 관점에서는 streaming 형태가 더 이상적이다.
+
+4. host-side crash/file simulation 확장
+- `file_sim.rs`는 아직 얇은 골격이다.
+- plan 07 / 07.5 후속으로 reboot/crash regression을 더 체계적으로 얹을 수 있다.
+
+## 7. 다음 작업 우선순위
 
 가장 추천하는 다음 단계:
-1. `docs/plans/07.5-no-std-no-alloc-transition.md` 실행 시작
-   - alloc 사용처 전수조사
-   - core API의 no_alloc 경계 설계
-   - host/Linux simulation 유지 전략을 구현 계획으로 구체화
+1. plan 07.5 두 번째 slice
+   - KV/TS iterator/query/GC에서 snapshot 의존을 더 줄이는 방향 검토
+   - caller-provided buffer / streaming API 후보 설계
 2. 그 다음 `docs/plans/07-testing-validation-and-rust-integration.md`
-   - host simulation
-   - crash/recovery validation
-   - 실제 Rust integration 예제
-3. 필요하면 그 다음에 embedded example을 실제 flash backend 쪽으로 확장
-4. 그 다음 TSDB parity/optimization 정리
-   - `end_info` 증분 갱신
-   - range query sector filtering
-   - status mutation handle API 검토
+   - host reboot/crash simulation 강화
+   - std-only file-backed support 실체화
+3. 그 다음 embedded example을 실제 hardware flash backend 쪽으로 확장
 
-## 10. 다음 세션 시작용 한 줄 요약
+## 8. 다음 세션 시작용 한 줄 요약
 
-- "plan 06 완료. TSDB는 variable/fixed blob mode, forward/reverse/range query, status mutation, clean/reset, rollover on/off, reboot 복원까지 구현됐다. 추가로 stm32f401re/nrf5340 embedded flashdb smoke example과 verify-all.sh가 들어가서 future verification 때 embedded build도 함께 본다."
+- "plan 07.5 1차 구현 완료. core src에서 alloc 의존을 제거했고 heapless 기반 bounded no_alloc 구조로 KV/TSDB를 재정렬했다. Linux test/std test는 유지되고 stm32f401re/nrf5340 example도 allocator 없이 빌드된다. 다음은 snapshot 의존을 더 줄이는 07.5 후속 slice다."

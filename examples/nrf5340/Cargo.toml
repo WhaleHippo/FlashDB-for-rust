@@ -14,4 +14,3 @@ defmt-rtt = "1.0.0"
 cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = "0.7.5"
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
-embedded-alloc = "0.6.0"

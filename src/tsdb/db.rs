@@ -1,9 +1,10 @@
-use alloc::vec;
-use alloc::vec::Vec;
-
 use embedded_storage::nor_flash::NorFlash;
+use heapless::Vec;
 
-use crate::config::{BlobMode, TimestampPolicy, TsdbConfig};
+use crate::config::{
+    BlobMode, MAX_RUNTIME_WRITE_SIZE, MAX_TS_HEADER_LEN, MAX_TS_INDEX_LEN, MAX_TS_PAYLOAD_LEN,
+    MAX_TS_RECORDS, MAX_TS_SECTORS, TimestampPolicy, TsdbConfig,
+};
 use crate::error::{Error, Result};
 use crate::layout::align::align_up;
 use crate::layout::common::ERASED_BYTE;
@@ -24,7 +25,7 @@ where
     layout: TsLayout,
     storage: NorFlashRegion<F>,
     mode: TsBlobMode,
-    sectors: Vec<TsSectorRuntime>,
+    sectors: Vec<TsSectorRuntime, MAX_TS_SECTORS>,
     current_sector: Option<u32>,
     oldest_sector: Option<u32>,
     last_timestamp: Option<u64>,
@@ -120,6 +121,11 @@ where
             .checked_add(payload_storage_len)
             .ok_or(Error::OutOfBounds)?;
         let sector_index = self.ensure_writable_sector(needed)?;
+        if self.total_record_count() >= MAX_TS_RECORDS {
+            return Err(Error::InvariantViolation(
+                "TSDB record count exceeds bounded no_alloc snapshot capacity",
+            ));
+        }
         let sector_base = self
             .region()
             .sector_start(sector_index)
@@ -152,7 +158,8 @@ where
                 payload_storage_len,
             )
             .map_err(map_core_error::<F::Error>)?;
-            let mut index_buf = vec![0u8; index_len as usize];
+            let mut index_buf = [0u8; MAX_TS_INDEX_LEN];
+            let index_buf = &mut index_buf[..index_len as usize];
             let index_header = match self.mode {
                 TsBlobMode::Variable => {
                     TsIndexHeader::variable(timestamp, data_offset, payload.len() as u32)
@@ -160,20 +167,20 @@ where
                 TsBlobMode::Fixed(_) => TsIndexHeader::new(timestamp),
             };
             index_header
-                .encode(&self.layout, self.mode, &mut index_buf)
+                .encode(&self.layout, self.mode, index_buf)
                 .map_err(map_core_error::<F::Error>)?;
-            self.storage.write(index_offset, &index_buf)?;
+            self.storage.write(index_offset, index_buf)?;
 
-            let mut write_scratch = vec![0u8; write_size];
+            let mut write_scratch = [0u8; MAX_RUNTIME_WRITE_SIZE];
             self.storage
-                .write_aligned(data_offset, payload, &mut write_scratch)?;
+                .write_aligned(data_offset, payload, &mut write_scratch[..write_size])?;
 
-            let mut status_scratch = vec![0u8; write_size];
+            let mut status_scratch = [0u8; MAX_RUNTIME_WRITE_SIZE];
             self.layout.tsl_status_scheme().write_transition(
                 &mut self.storage,
                 index_offset,
                 TSL_WRITE,
-                &mut status_scratch,
+                &mut status_scratch[..write_size],
             )?;
 
             sector.empty_index_offset = sector
@@ -192,17 +199,21 @@ where
         Ok(())
     }
 
-    pub fn iter(&mut self) -> Result<TsIterator, F::Error> {
+    pub fn iter(&mut self) -> Result<TsIterator<MAX_TS_RECORDS>, F::Error> {
         Ok(TsIterator::new(self.snapshot_records()?))
     }
 
-    pub fn iter_reverse(&mut self) -> Result<TsIterator, F::Error> {
+    pub fn iter_reverse(&mut self) -> Result<TsIterator<MAX_TS_RECORDS>, F::Error> {
         let mut records = self.snapshot_records()?;
         records.reverse();
         Ok(TsIterator::new(records))
     }
 
-    pub fn iter_by_time(&mut self, from: u64, to: u64) -> Result<TsIterator, F::Error> {
+    pub fn iter_by_time(
+        &mut self,
+        from: u64,
+        to: u64,
+    ) -> Result<TsIterator<MAX_TS_RECORDS>, F::Error> {
         let mut records = self.snapshot_records()?;
         let (lower, upper) = if from <= to { (from, to) } else { (to, from) };
         records.retain(|record| record.timestamp >= lower && record.timestamp <= upper);
@@ -238,12 +249,13 @@ where
         if status == current_status {
             return Ok(true);
         }
-        let mut scratch = vec![0u8; self.region().write_size() as usize];
+        let write_size = self.region().write_size() as usize;
+        let mut scratch = [0u8; MAX_RUNTIME_WRITE_SIZE];
         self.layout.tsl_status_scheme().write_transition(
             &mut self.storage,
             index_offset,
             status,
-            &mut scratch,
+            &mut scratch[..write_size],
         )?;
         Ok(true)
     }
@@ -252,7 +264,7 @@ where
         self.format()
     }
 
-    fn snapshot_records(&mut self) -> Result<Vec<TsOwnedRecord>, F::Error> {
+    fn snapshot_records(&mut self) -> Result<Vec<TsOwnedRecord, MAX_TS_RECORDS>, F::Error> {
         let mut records = Vec::new();
         for sector_index in sector_iteration_order(self.region().sector_count(), self.oldest_sector)
         {
@@ -267,7 +279,7 @@ where
     fn collect_sector_records(
         &mut self,
         sector_index: u32,
-        out: &mut Vec<TsOwnedRecord>,
+        out: &mut Vec<TsOwnedRecord, MAX_TS_RECORDS>,
     ) -> Result<(), F::Error> {
         let sector_base = self
             .region()
@@ -288,12 +300,13 @@ where
             )
             .ok_or(Error::OutOfBounds)?;
         let empty_index = self.sectors[sector_index as usize].empty_index_offset;
-        let mut index_buf = vec![0u8; index_len as usize];
+        let mut index_buf = [0u8; MAX_TS_INDEX_LEN];
+        let index_buf = &mut index_buf[..index_len as usize];
         let mut entry_index = 0_u32;
 
         while index_offset < empty_index {
-            self.storage.read(index_offset, &mut index_buf)?;
-            let header = TsIndexHeader::decode(&self.layout, self.mode, &index_buf)
+            self.storage.read(index_offset, index_buf)?;
+            let header = TsIndexHeader::decode(&self.layout, self.mode, index_buf)
                 .map_err(map_core_error::<F::Error>)?;
             if header.status == TSL_PRE_WRITE || header.status == 0 {
                 break;
@@ -311,13 +324,28 @@ where
             if log_addr < sector_base || log_end > sector_end {
                 return Err(Error::CorruptedHeader);
             }
-            let mut payload = vec![0u8; log_len as usize];
-            self.storage.read(log_addr, &mut payload)?;
+            if log_len as usize > MAX_TS_PAYLOAD_LEN {
+                return Err(Error::InvariantViolation(
+                    "TSDB payload exceeds bounded no_alloc capacity",
+                ));
+            }
+            let mut payload = Vec::new();
+            let mut payload_buf = [0u8; MAX_TS_PAYLOAD_LEN];
+            self.storage
+                .read(log_addr, &mut payload_buf[..log_len as usize])?;
+            payload
+                .extend_from_slice(&payload_buf[..log_len as usize])
+                .map_err(|_| {
+                    Error::InvariantViolation("TSDB payload exceeded bounded no_alloc capacity")
+                })?;
             out.push(TsOwnedRecord {
                 status: header.status,
                 timestamp: header.timestamp,
                 payload,
-            });
+            })
+            .map_err(|_| {
+                Error::InvariantViolation("TSDB snapshot exceeded bounded no_alloc capacity")
+            })?;
             index_offset = index_offset
                 .checked_add(index_len)
                 .ok_or(Error::OutOfBounds)?;
@@ -335,7 +363,8 @@ where
             .layout
             .index_header_len(self.mode)
             .map_err(map_core_error::<F::Error>)? as u32;
-        let mut index_buf = vec![0u8; index_len as usize];
+        let mut index_buf = [0u8; MAX_TS_INDEX_LEN];
+        let index_buf = &mut index_buf[..index_len as usize];
 
         for sector_index in sector_iteration_order(self.region().sector_count(), self.oldest_sector)
         {
@@ -355,7 +384,7 @@ where
                 )
                 .ok_or(Error::OutOfBounds)?;
             while index_offset < sector.empty_index_offset {
-                self.storage.read(index_offset, &mut index_buf)?;
+                self.storage.read(index_offset, index_buf)?;
                 let header = TsIndexHeader::decode(&self.layout, self.mode, &index_buf)
                     .map_err(map_core_error::<F::Error>)?;
                 if header.status == 0 || header.status == TSL_PRE_WRITE {
@@ -403,9 +432,16 @@ where
 
     fn payload_storage_len(&self, payload: &[u8]) -> Result<u32, F::Error> {
         match self.mode {
-            TsBlobMode::Variable => align_up(payload.len(), self.region().write_size() as usize)
-                .map(|len| len as u32)
-                .map_err(map_core_error::<F::Error>),
+            TsBlobMode::Variable => {
+                if payload.len() > MAX_TS_PAYLOAD_LEN {
+                    return Err(Error::InvariantViolation(
+                        "TSDB variable payload exceeds bounded no_alloc capacity",
+                    ));
+                }
+                align_up(payload.len(), self.region().write_size() as usize)
+                    .map(|len| len as u32)
+                    .map_err(map_core_error::<F::Error>)
+            }
             TsBlobMode::Fixed(len) => {
                 if payload.len() != len as usize {
                     return Err(Error::InvariantViolation(
@@ -479,6 +515,13 @@ where
             .ok_or(Error::OutOfBounds)
     }
 
+    fn total_record_count(&self) -> usize {
+        self.sectors
+            .iter()
+            .map(|sector| sector.entry_count as usize)
+            .sum()
+    }
+
     fn reset_sector(&mut self, sector_index: u32) -> Result<(), F::Error> {
         self.storage.erase_sector(sector_index)?;
         let sector_base = self
@@ -500,12 +543,13 @@ where
             .region()
             .sector_start(sector_index)
             .map_err(map_core_error::<F::Error>)?;
-        let mut scratch = vec![0u8; self.region().write_size() as usize];
+        let write_size = self.region().write_size() as usize;
+        let mut scratch = [0u8; MAX_RUNTIME_WRITE_SIZE];
         self.layout.sector_status_scheme().write_transition(
             &mut self.storage,
             sector_base,
             SECTOR_STORE_FULL,
-            &mut scratch,
+            &mut scratch[..write_size],
         )?;
         self.sectors[sector_index as usize].store_status = SECTOR_STORE_FULL;
         Ok(())
@@ -526,8 +570,8 @@ fn empty_sector_table(
     region: &StorageRegion,
     layout: &TsLayout,
     mode: TsBlobMode,
-) -> Result<Vec<TsSectorRuntime>> {
-    let sector_count = region.sector_count() as usize;
+) -> Result<Vec<TsSectorRuntime, MAX_TS_SECTORS>> {
+    let _sector_count = region.sector_count() as usize;
     let sector_len = region.erase_size();
     let index_len = layout.index_header_len(mode)? as u32;
     let header_len = layout.sector_header_len()? as u32;
@@ -536,10 +580,14 @@ fn empty_sector_table(
             "TS layout does not fit inside the configured sector",
         ));
     }
-    let mut sectors = Vec::with_capacity(sector_count);
+    let mut sectors = Vec::new();
     for sector_index in 0..region.sector_count() {
         let base = region.sector_start(sector_index)?;
-        sectors.push(empty_sector_runtime(region, layout, base)?);
+        sectors
+            .push(empty_sector_runtime(region, layout, base)?)
+            .map_err(|_| {
+                Error::InvariantViolation("TSDB sector table exceeded bounded no_alloc capacity")
+            })?;
     }
     Ok(sectors)
 }
@@ -563,7 +611,7 @@ fn scan_all_sectors<F>(
     storage: &mut NorFlashRegion<F>,
     layout: &TsLayout,
     mode: TsBlobMode,
-) -> Result<Vec<TsSectorRuntime>, F::Error>
+) -> Result<Vec<TsSectorRuntime, MAX_TS_SECTORS>, F::Error>
 where
     F: NorFlash,
 {
@@ -576,19 +624,19 @@ where
     let index_len = layout
         .index_header_len(mode)
         .map_err(map_core_error::<F::Error>)? as u32;
-    let mut header_buf = vec![0u8; header_len];
-    let mut index_buf = vec![0u8; index_len as usize];
+    let mut header_buf = [0u8; MAX_TS_HEADER_LEN];
+    let mut index_buf = [0u8; MAX_TS_INDEX_LEN];
 
     for sector_index in 0..region.sector_count() {
         let base = region
             .sector_start(sector_index)
             .map_err(map_core_error::<F::Error>)?;
-        storage.read(base, &mut header_buf)?;
-        if is_erased(&header_buf) {
+        storage.read(base, &mut header_buf[..header_len])?;
+        if is_erased(&header_buf[..header_len]) {
             continue;
         }
-        let header =
-            TsSectorHeader::decode(layout, &header_buf).map_err(map_core_error::<F::Error>)?;
+        let header = TsSectorHeader::decode(layout, &header_buf[..header_len])
+            .map_err(map_core_error::<F::Error>)?;
         let sector = &mut sectors[sector_index as usize];
         sector.store_status = header.store_status;
         sector.start_time = sentinel_to_option(header.start_time);
@@ -605,11 +653,11 @@ where
             .checked_add(index_len)
             .is_some_and(|end| end <= sector.empty_data_offset)
         {
-            storage.read(index_offset, &mut index_buf)?;
-            if is_erased(&index_buf) {
+            storage.read(index_offset, &mut index_buf[..index_len as usize])?;
+            if is_erased(&index_buf[..index_len as usize]) {
                 break;
             }
-            let entry = TsIndexHeader::decode(layout, mode, &index_buf)
+            let entry = TsIndexHeader::decode(layout, mode, &index_buf[..index_len as usize])
                 .map_err(map_core_error::<F::Error>)?;
             if entry.status == 0 || entry.status == TSL_PRE_WRITE {
                 break;
@@ -664,14 +712,21 @@ fn select_current_sector(sectors: &[TsSectorRuntime]) -> Option<u32> {
     None
 }
 
-fn sector_iteration_order(sector_count: u32, oldest_sector: Option<u32>) -> Vec<u32> {
+fn sector_iteration_order(
+    sector_count: u32,
+    oldest_sector: Option<u32>,
+) -> Vec<u32, MAX_TS_SECTORS> {
     if sector_count == 0 {
         return Vec::new();
     }
     let start = oldest_sector.unwrap_or(0) % sector_count;
-    (0..sector_count)
-        .map(|offset| (start + offset) % sector_count)
-        .collect()
+    let mut order = Vec::new();
+    for offset in 0..sector_count {
+        order
+            .push((start + offset) % sector_count)
+            .expect("sector_iteration_order bounded by validated MAX_TS_SECTORS");
+    }
+    order
 }
 
 fn next_sector_index(sector_index: u32, sector_count: u32, rollover: bool) -> Option<u32> {
@@ -747,17 +802,19 @@ where
     let mut header = TsSectorHeader::new_empty();
     header.store_status = SECTOR_STORE_USING;
     header.start_time = timestamp;
-    let mut header_buf = vec![
-        0u8;
-        layout
-            .sector_header_len()
-            .map_err(map_core_error::<F::Error>)?
-    ];
-    header
-        .encode(layout, &mut header_buf)
+    let header_len = layout
+        .sector_header_len()
         .map_err(map_core_error::<F::Error>)?;
-    let mut scratch = vec![0u8; write_size];
-    storage.write_aligned(sector_base, &header_buf, &mut scratch)
+    let mut header_buf = [0u8; MAX_TS_HEADER_LEN];
+    header
+        .encode(layout, &mut header_buf[..header_len])
+        .map_err(map_core_error::<F::Error>)?;
+    let mut scratch = [0u8; MAX_RUNTIME_WRITE_SIZE];
+    storage.write_aligned(
+        sector_base,
+        &header_buf[..header_len],
+        &mut scratch[..write_size],
+    )
 }
 
 fn sentinel_to_option(value: u64) -> Option<u64> {

@@ -12,3 +12,4 @@ std = []
 
 [dependencies]
 embedded-storage = "0.3"
+heapless = "0.8"

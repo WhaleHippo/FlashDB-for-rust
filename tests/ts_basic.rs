@@ -38,18 +38,18 @@ fn tsdb_variable_append_iterates_in_timestamp_order_across_reboot() {
     let records = db.iter().unwrap().collect::<Vec<_>>();
     assert_eq!(records.len(), 5);
     assert_eq!(records[0].timestamp, 10);
-    assert_eq!(records[0].payload, b"one");
+    assert_eq!(records[0].payload.as_slice(), b"one");
     assert_eq!(records[4].timestamp, 50);
-    assert_eq!(records[4].payload, b"five");
+    assert_eq!(records[4].payload.as_slice(), b"five");
 
     let flash = db.into_flash();
     let mut rebooted = TsDb::mount(flash, config).unwrap();
     let records = rebooted.iter().unwrap().collect::<Vec<_>>();
     assert_eq!(records.len(), 5);
     assert_eq!(records[1].timestamp, 20);
-    assert_eq!(records[1].payload, b"two");
+    assert_eq!(records[1].payload.as_slice(), b"two");
     assert_eq!(records[3].timestamp, 40);
-    assert_eq!(records[3].payload, b"four");
+    assert_eq!(records[3].payload.as_slice(), b"four");
     assert_eq!(rebooted.oldest_sector_index(), Some(0));
     assert_eq!(rebooted.current_sector_index(), Some(1));
     assert_eq!(rebooted.last_timestamp(), Some(50));
@@ -107,8 +107,8 @@ fn tsdb_reverse_iteration_returns_latest_first_across_sectors() {
         .collect::<Vec<_>>();
 
     assert_eq!(timestamps, vec![50, 40, 30, 20, 10]);
-    assert_eq!(payloads[0], b"five");
-    assert_eq!(payloads[4], b"one");
+    assert_eq!(payloads[0].as_slice(), b"five");
+    assert_eq!(payloads[4].as_slice(), b"one");
 }
 
 #[test]
@@ -199,6 +199,6 @@ fn tsdb_clean_resets_all_records_and_allows_reuse_after_reboot() {
     let records = rebooted.iter().unwrap().collect::<Vec<_>>();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].timestamp, 30);
-    assert_eq!(records[0].payload, b"three");
+    assert_eq!(records[0].payload.as_slice(), b"three");
     assert_eq!(records[0].status, TSL_WRITE);
 }

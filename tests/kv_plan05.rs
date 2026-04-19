@@ -196,5 +196,5 @@ fn iterator_snapshot_yields_only_live_records() {
     let records: Vec<_> = db.iter().unwrap().collect();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].key, "alpha");
-    assert_eq!(records[0].value, vec![0x43; 8]);
+    assert_eq!(records[0].value.as_slice(), &[0x43; 8]);
 }

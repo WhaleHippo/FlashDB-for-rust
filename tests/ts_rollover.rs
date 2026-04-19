@@ -94,11 +94,11 @@ fn tsdb_fixed_blob_mode_appends_iterates_and_reboots() {
     let records = db.iter().unwrap().collect::<Vec<_>>();
     assert_eq!(records.len(), 3);
     assert_eq!(records[0].timestamp, 10);
-    assert_eq!(records[0].payload, first);
+    assert_eq!(records[0].payload.as_slice(), &first);
     assert_eq!(records[1].timestamp, 20);
-    assert_eq!(records[1].payload, second);
+    assert_eq!(records[1].payload.as_slice(), &second);
     assert_eq!(records[2].timestamp, 30);
-    assert_eq!(records[2].payload, third);
+    assert_eq!(records[2].payload.as_slice(), &third);
 
     let err = db.append(40, &[0x44; 15]).unwrap_err();
     assert!(matches!(err, Error::InvariantViolation(_)));
@@ -113,6 +113,6 @@ fn tsdb_fixed_blob_mode_appends_iterates_and_reboots() {
             .collect::<Vec<_>>(),
         vec![30, 20, 10]
     );
-    assert_eq!(rebooted_records[0].payload, third);
-    assert_eq!(rebooted_records[2].payload, first);
+    assert_eq!(rebooted_records[0].payload.as_slice(), &third);
+    assert_eq!(rebooted_records[2].payload.as_slice(), &first);
 }
