@@ -50,16 +50,15 @@
 이번 slice에서 실제 버그가 드러났고 함께 수정했다.
 
 문제:
-- 기존 `set_status(...)`는 target status만 바로 한 번 program 했다.
-- TS status table은 monotonic state progression을 연속적으로 program 해야 하므로,
-  `TSL_WRITE -> TSL_DELETED`처럼 중간 상태를 건너뛰면 reboot 뒤 `InvalidState`가 날 수 있었다.
+- 기존 `src/tsdb/db.rs`의 `set_status(...)`는 target status 하나만 바로 program 했다.
+- 그런데 status table 특성상 `TSL_WRITE -> TSL_DELETED`처럼 중간 상태를 건너뛰면 reboot 뒤 `InvalidState`가 날 수 있었다.
 
 수정:
 - `src/tsdb/db.rs`
   - `set_status(...)`가 `current_status + 1 ..= target_status`를 순차적으로 program 하도록 변경
 
 효과:
-- `TSL_USER_STATUS1`뿐 아니라 `TSL_DELETED` 같은 더 높은 status도 reboot 뒤 정상 decode/query가 가능해졌다.
+- `TSL_USER_STATUS1`뿐 아니라 `TSL_DELETED`도 reboot 후 정상 decode/query 가능
 
 이 구현은 upstream status transition 의도와 맞고, 현재 Rust 구조에서도 truthful한 recovery 보정이다.
 
