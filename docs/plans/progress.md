@@ -14,7 +14,7 @@
   - plan 04: 완료
   - plan 05: 완료
   - plan 06: 완료
-  - plan 07: 부분 진행
+  - plan 07: 1차 crash/reboot simulation slice 완료
   - plan 07.5: 완료
 
 현재 프로젝트는 다음 상태다.
@@ -24,137 +24,149 @@
 - Linux host 테스트와 std feature 테스트는 계속 유지된다.
 - embedded example 2종(stm32f401re, nrf5340)은 allocator 없이 빌드된다.
 - std-only file-backed simulator가 실제 `NorFlash` 백엔드로 동작하며 KV/TSDB reboot 회귀를 Linux에서 검증할 수 있다.
-- Linux host example 1종(`examples/linux`)이 실제 file-backed simulator를 사용해 KV/TS smoke flow를 직접 실행한다.
+- plan 07용 subprocess 기반 crash harness가 추가되어, 같은 backing file을 두고 “다른 프로세스가 중간 상태를 남기고 종료한 뒤 새 프로세스가 mount/recovery”하는 시나리오를 테스트할 수 있다.
 
-## 2. 이번 작업: plan 07.5 마무리
+## 2. 이번 작업: plan 07 첫 번째 file-backed crash simulation slice
 
-이번 작업의 목표는 progress.md에 남아 있던 "host-side crash/file simulation 확장" 공백을 메워 plan 07.5 완료 기준을 충족시키는 것이었다.
-완료한 범위는 다음과 같다.
+이번 작업의 목표는 plan 07의 Layer 3 / Phase 7 방향에 맞춰, 단순 `reopen()` 수준을 넘어서 실제 프로세스 경계를 가진 reboot/crash regression을 추가하는 것이었다.
+이번 slice에서 완료한 범위는 다음과 같다.
 
-### 2.1 core no_alloc 전환 상태 유지
-이미 완료되어 있던 1차 slice의 결과는 그대로 유지된다.
+### 2.1 subprocess 기반 crash harness 추가
+새 바이너리를 추가했다.
+- `src/bin/flashdb-crash-harness.rs`
+
+이 바이너리는 std feature 환경에서 임시 file-backed flash를 열고, 명령별로 다음 단계를 수행한다.
+- 정상 KV 상태 초기화
+- PRE_WRITE 상태의 tail record 주입
+- CRC mismatch tail record 주입
+- 새 프로세스에서 mount/recovery 후 기존 정상 값 검증
+- recovery 이후 새 write가 계속 가능한지 검증
+
+즉, 이제 test 내부 같은 프로세스에서 `reopen()`만 하는 것이 아니라,
+서로 다른 프로세스가 같은 backing file을 순차적으로 열어 recovery semantics를 검증할 수 있다.
+
+### 2.2 file-backed crash regression test 추가
+새 std-feature 테스트를 추가했다.
+- `tests/crash_scenarios.rs`
+
+검증하는 것:
+1. `kv_process_restart_recovers_from_pre_write_tail`
+   - 첫 프로세스가 정상 KV를 기록
+   - 다음 프로세스가 PRE_WRITE tail을 남김
+   - 세 번째 프로세스가 mount 시 broken tail을 버리고 기존 stable 값을 유지하는지 확인
+2. `kv_process_restart_recovers_from_crc_mismatched_tail`
+   - 첫 프로세스가 정상 KV를 기록
+   - 다음 프로세스가 CRC mismatch tail을 남김
+   - 세 번째 프로세스가 mount 시 bad tail을 버리고 기존 good 값을 유지하는지 확인
+
+두 테스트 모두 recovery 이후 새 KV write까지 성공해야 통과한다.
+
+### 2.3 crash test 실행 스크립트 추가
+- `scripts/run-crash-tests.sh`
+
+현재는 아래를 수행한다.
+- `cargo test --features std --test crash_scenarios`
+
+즉, plan 07의 file-backed crash layer를 별도로 빠르게 재실행할 수 있다.
+
+## 3. 기존 완료 상태 유지
+
+이전 세션까지 완료된 plan 07.5 결과는 그대로 유지된다.
 - core `src/`에서 `extern crate alloc` 제거
 - `src/kv/*`, `src/tsdb/*`의 `alloc::vec`, `alloc::string` 제거
 - 동적 할당 대신 `heapless` 기반 bounded container 사용
 - `src/config.rs`의 bounded no_alloc cap 검증 유지
 - allocator 없는 embedded smoke example 유지
+- `src/storage/file_sim.rs`의 std-only file-backed backend 유지
+- `examples/linux/src/bin/flashdb.rs`의 file-backed smoke example 유지
 
-즉, core는 계속 no_std + bounded no_alloc 방향에 맞춰 정렬되어 있다.
+즉, 현재 구조는
+- core: no_std + bounded no_alloc
+- host validation: std-only file-backed simulator + subprocess crash harness
+로 정리되어 있다.
 
-### 2.2 std-only file-backed support layer 실체화
-`src/storage/file_sim.rs`가 더 이상 빈 골격이 아니라 실제 재부팅 가능한 host 포팅 계층이 되었다.
-
-핵심 변화:
-- `FileFlashSimulator<const WRITE_SIZE, const ERASE_SIZE>` 추가
-- backing file 자동 생성/초기화 (`0xFF` erased state 유지)
-- `ReadNorFlash` / `NorFlash` 구현
-- NOR 특성 유지
-  - write alignment 검증
-  - erase alignment 검증
-  - `0 -> 1` 비트 복구 시도 시 `RequiresErase` 반환
-- `reopen()` 제공으로 같은 backing file을 다시 열어 reboot 시나리오를 직접 검증 가능
-- `src/storage/mod.rs`에서 `FileFlashSimulator`, `FileFlashError` 재노출
-
-### 2.3 file-backed regression test 추가
-새 std-feature 테스트를 추가했다.
-- `tests/file_sim.rs`
-
-검증하는 것:
-- file-backed KVDB 상태가 reopen 뒤에도 유지되는지
-- file-backed TSDB append/iterate 상태가 reopen 뒤에도 유지되는지
-- simulator가 erase 없이 `0 -> 1` 비트 복구를 허용하지 않는지
-
-이 테스트는 `cargo test --features std`에서 실행된다.
-
-### 2.4 Linux host example을 실제 file-backed smoke로 전환
-`examples/linux/src/bin/flashdb.rs`는 더 이상 `MockFlash` 기반 RAM smoke만 하지 않는다.
-이제 실제 임시 파일 기반 `FileFlashSimulator`를 사용한다.
-
-즉, host example이 다음을 직접 증명한다.
-- KVDB file-backed write/reboot/read
-- TSDB file-backed append/reboot/query
-- core는 no_alloc로 유지되면서도 std-only host simulation은 독립 계층으로 계속 활용 가능
-
-## 3. 이번에 수정된 파일
+## 4. 이번에 수정된 파일
 
 ### 코드
-- `src/storage/file_sim.rs`
-- `src/storage/mod.rs`
-- `examples/linux/src/bin/flashdb.rs`
+- `src/bin/flashdb-crash-harness.rs`
 
 ### 테스트
-- `tests/file_sim.rs`
+- `tests/crash_scenarios.rs`
+
+### 스크립트
+- `scripts/run-crash-tests.sh`
 
 ### 문서
 - `docs/plans/progress.md`
 
-## 4. 검증 결과
+## 5. 검증 결과
 
 이번 작업에서 통과한 검증:
+- `cargo test --features std --test crash_scenarios`
 - `cargo fmt`
 - `cargo test`
 - `cargo test --features std`
+- `bash scripts/run-crash-tests.sh`
 - `cargo run --manifest-path examples/linux/Cargo.toml --bin flashdb`
 - `cargo build --manifest-path examples/stm32f401re/Cargo.toml --bin flashdb --target thumbv7em-none-eabihf`
 - `cargo build --manifest-path examples/nrf5340/Cargo.toml --bin flashdb --target thumbv8m.main-none-eabihf`
 - `bash scripts/verify-all.sh`
 
-보조 TDD 확인:
-- `cargo test --features std --test file_sim`
-  - 처음에는 새 simulator API 부재로 compile failure를 확인했다.
-  - 구현 후에는 file-backed persistence / erase semantics 테스트가 통과했다.
+TDD 확인:
+- 먼저 `tests/crash_scenarios.rs`를 추가했다.
+- 초기 실행에서 `CARGO_BIN_EXE_flashdb-crash-harness` 경로가 없어 실패하는 것을 확인했다.
+- 이후 harness 바이너리를 구현하고 테스트를 다시 실행해 통과시켰다.
 
-## 5. upstream 비교 메모
+## 6. upstream 비교 메모
 
-이번 마무리 작업은 upstream FlashDB의 host/file mode 철학을 Rust 쪽에서 더 명확히 드러내는 쪽이다.
 실제 참고한 upstream 근거:
-- `~/Desktop/FlashDB/docs/porting.md`
-  - core DB 위에 flash `read`/`write`/`erase` 포팅 계층을 붙이는 구조 설명
+- `~/Desktop/FlashDB/tests/fdb_kvdb_tc.c`
+  - reboot 뒤 KV 상태를 다시 mount해서 검증하는 흐름
+- `~/Desktop/FlashDB/tests/fdb_tsdb_tc.c`
+  - reboot simulation 뒤 query_count/iteration을 다시 검증하는 흐름
 - `~/Desktop/FlashDB/src/fdb_file.c`
-  - host/file mode를 core 밖의 파일 기반 포팅 계층으로 유지
+  - host/file mode를 core 밖의 파일 기반 포팅 계층으로 유지하는 방식
 
 비교 요약:
 - 공통점
-  - core logic 바깥에 std/file 기반 포팅 계층을 둔다.
-  - Linux host에서 reboot 성격의 검증을 계속 가능하게 한다.
+  - host 환경에서 file-backed storage를 사용하고 reboot 후 mount semantics를 검증한다.
+  - recovery 결과를 다시 읽기/쓰기 동작으로 확인한다.
 - 차이점
-  - upstream C는 섹터별 파일 캐시를 두는 구조다.
-  - 현재 Rust 구현은 우선 correctness와 단순성을 위해 "단일 backing file + reopen 기반" simulator를 택했다.
+  - upstream C 테스트는 라이브러리 내부 init/deinit 호출 중심의 reboot simulation이 많다.
+  - 현재 Rust slice는 실제 별도 프로세스 바이너리를 도입해, backing file을 공유하는 subprocess 경계까지 검증한다.
 
-즉, upstream의 계층 분리 철학은 유지하면서도 Rust 쪽은 더 단순한 std-only backend로 plan 07.5 완료 기준을 충족시켰다고 보는 것이 정확하다.
+즉, upstream의 host reboot 검증 철학은 유지하면서도 Rust 쪽은 subprocess harness를 통해 “프로세스 경계가 있는 crash/restart”를 더 직접적으로 드러내는 방향을 택했다.
 
-## 6. 남은 차이점 / 후속 작업
+## 7. 남은 차이점 / 후속 작업
 
-plan 07.5는 완료되었지만, 이후 개선 여지는 남아 있다.
+plan 07은 아직 전체 완료가 아니다. 현재 남은 핵심 항목은 다음과 같다.
 
-1. bounded cap 완화/재설계
-- 현재는 `heapless` 기반 고정 상한을 둔 상태다.
-- 더 일반적인 API로 가려면 caller-provided scratch / streaming iterator / callback scan 쪽으로 추가 리팩토링이 필요하다.
+1. TSDB file-backed crash scenarios 추가
+- 현재 subprocess crash regression은 KV 쪽 interrupted tail recovery에 집중되어 있다.
+- 다음 slice에서는 TSDB PRE_WRITE/index/data interruption 시나리오를 같은 방식으로 추가하는 것이 좋다.
 
-2. KV GC의 snapshot 의존 축소
-- 현재 GC는 no_alloc이긴 하지만 bounded live-set snapshot을 사용한다.
-- 이후 필요하면 더 upstream-like 하거나 더 streaming-friendly 한 compacting/sector-copy 전략으로 바꿀 수 있다.
+2. 더 다양한 crash injection 지점 확대
+- 현재는 PRE_WRITE tail, CRC mismatch tail 두 가지를 file-backed subprocess로 검증한다.
+- 이후 payload partial write, sector-header corruption, GC 중단 지점도 별도 시나리오로 늘릴 수 있다.
 
-3. TSDB iterator/query의 snapshot 의존 축소
-- 현재 TSDB iter/query도 heapless snapshot 기반이다.
-- correctness는 유지되지만, 완전한 no_alloc-friendly API 관점에서는 streaming 형태가 더 이상적이다.
+3. hardware smoke 절차 문서화
+- STM32F302 기준 실제 flash backend smoke procedure는 아직 별도 문서로 정리되지 않았다.
+- plan 07 완료 기준에 맞추려면 최소 hardware test procedure 문서가 필요하다.
 
-4. host-side crash simulation 확장
-- 현재는 file-backed reboot regression이 가능해졌다.
-- 다음 단계에서는 process restart / crash injection / partial write 시나리오를 더 체계적으로 얹을 수 있다.
+4. regression catalog 문서화
+- 어떤 버그/시나리오가 어떤 테스트 파일에 묶여 있는지 별도 카탈로그 문서가 있으면 다음 세션 연속성이 더 좋아진다.
 
-## 7. 다음 작업 우선순위
+## 8. 다음 작업 우선순위
 
 가장 추천하는 다음 단계:
-1. `docs/plans/07-testing-validation-and-rust-integration.md`
-   - host reboot/crash simulation 강화
-   - std-only file-backed support 위에 crash regression 추가
-   - hardware validation / host validation 구분 정리
-2. 그 다음 07.5 후속 최적화 성격 작업
-   - KV/TS iterator/query/GC에서 snapshot 의존을 더 줄이는 방향 검토
-   - caller-provided buffer / streaming API 후보 설계
-3. 그 다음 embedded example을 실제 hardware flash backend 쪽으로 확장
+1. plan 07 두 번째 slice
+   - TSDB file-backed crash/reboot scenarios 추가
+   - subprocess harness에 TSDB interrupted append / recovery 검증 명령 추가
+2. 그 다음 hardware validation 문서화
+   - STM32F302 smoke 절차 문서 초안 작성
+3. 그 다음 regression catalog 정리
+   - mock/file/hardware 검증 레이어 차이와 실행 순서 문서화
 
-## 8. 다음 세션 시작용 한 줄 요약
+## 9. 다음 세션 시작용 한 줄 요약
 
-- "plan 07.5 완료. core src의 no_alloc 전환은 유지되고, std-only `FileFlashSimulator`가 실제 file-backed host backend로 동작한다. Linux example도 이제 file-backed reboot smoke를 수행한다. 다음은 plan 07에서 crash/reboot validation을 더 강화하는 작업이다."
+- "plan 07의 첫 slice 완료. std-only file-backed simulator 위에 subprocess 기반 `flashdb-crash-harness`와 `tests/crash_scenarios.rs`를 추가해서, KV PRE_WRITE/CRC tail recovery를 실제 프로세스 재시작 경계에서 검증한다. 다음은 TSDB crash scenarios와 STM32F302 hardware procedure 문서화다."
