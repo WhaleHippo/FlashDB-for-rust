@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+
+cd "$repo_root"
+cargo fmt --check
+(
+  cd "$repo_root/examples/stm32f401re"
+  cargo fmt --check
+)
+(
+  cd "$repo_root/examples/nrf5340"
+  cargo fmt --check
+)
+cargo test
+cargo test --features std
+cargo build --manifest-path examples/stm32f401re/Cargo.toml --bin flashdb --target thumbv7em-none-eabihf
+cargo build --manifest-path examples/nrf5340/Cargo.toml --bin flashdb --target thumbv8m.main-none-eabihf
