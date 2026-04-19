@@ -20,7 +20,7 @@
 7. `06-tsdb-plan.md`
    - TSDB 구현 순서
 8. `07-testing-validation-and-rust-integration.md`
-   - host simulation, crash test, hardware validation, Rust 예제
+   - host simulation, crash test, Linux host validation, Rust 예제
 9. `07.5-no-std-no-alloc-transition.md`
    - core를 no_std + no_alloc로 재정렬하면서 host/Linux simulation을 유지하는 전환 계획
 

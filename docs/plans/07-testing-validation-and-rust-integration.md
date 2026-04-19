@@ -1,6 +1,6 @@
 # Testing, Validation, and Rust Integration Plan
 
-> 목적: FlashDB-for-rust를 실제로 신뢰할 수 있도록 host-side 시뮬레이션, crash test, hardware smoke test, Rust 예제까지 포함한 검증 계획을 정의한다.
+> 목적: FlashDB-for-rust를 실제로 신뢰할 수 있도록 host-side 시뮬레이션, crash test, Linux host 검증 절차, Rust 예제까지 포함한 검증 계획을 정의한다.
 
 ## 1. 목표
 
@@ -12,7 +12,7 @@ FlashDB 계열 저장소는 아래를 반드시 검증해야 한다.
 - 재부팅 후 mount
 - GC 이후 일관성
 - time query/iteration 정확성
-- 실제 보드에서의 동작 가능성
+- Linux host 환경에서의 실제 persistence/recovery 운용 가능성
 
 ## 2. 검증 레이어
 
@@ -37,10 +37,11 @@ FlashDB 계열 저장소는 아래를 반드시 검증해야 한다.
 - interrupted write 재현
 - 장시간 시나리오
 
-### Layer 4. hardware smoke tests
+### Layer 4. Linux host validation
 대상:
-- STM32F302 + Rust
-- 실제 flash backend 위 mount/set/get/append
+- std feature + file-backed backend 기반 실제 host persistence 흐름
+- Linux 프로세스 경계를 넘는 mount/set/get/append/reboot 검증
+- 운영 시나리오를 닮은 검증 절차와 회귀 실행 문서화
 
 ## 3. 예상 파일
 
@@ -55,7 +56,7 @@ FlashDB 계열 저장소는 아래를 반드시 검증해야 한다.
 - `tests/ts_query.rs`
 - `tests/crash_scenarios.rs`
 - `examples/kv_mock.rs`
-- `examples/stm32f302_kv_demo.rs`
+- `examples/linux/src/bin/flashdb.rs`
 - 필요 시 `scripts/run-crash-tests.sh`
 
 ## 4. 세부 구현 단계
@@ -160,7 +161,7 @@ mock 요구사항:
 
 예상 예제:
 - `examples/kv_mock.rs`
-- `examples/stm32f302_kv_demo.rs`
+- `examples/linux/src/bin/flashdb.rs`
 
 예제 내용 권장:
 - flash region 설정
@@ -168,17 +169,18 @@ mock 요구사항:
 - set/get 수행
 - reboot 후 persistence 시연(가능하면 로그 또는 주석으로 설명)
 
-### Phase 10. STM32F302 hardware smoke test
+### Phase 10. Linux host smoke/validation procedure
 
 목표:
-- 실제 타깃 보드에서 최소 동작을 확인한다.
+- Linux host에서 이 라이브러리를 실제 persistence/recovery 시나리오로 반복 검증하는 canonical 절차를 확정한다.
 
 권장 체크:
-- cross build 성공
-- 보드 flash backend 초기화 성공
-- format/mount 성공
-- KV set/get 1회 성공
-- TS append 1회 성공(나중 단계)
+- `cargo test`
+- `cargo test --features std`
+- `cargo test --features std --test crash_scenarios`
+- `bash scripts/run-crash-tests.sh`
+- `cargo run --manifest-path examples/linux/Cargo.toml --bin flashdb`
+- 필요 시 file-backed simulator backing file을 지우고 fresh run / reboot run을 모두 확인
 
 ### Phase 11. 문서/검증 절차 정리
 
@@ -187,15 +189,15 @@ mock 요구사항:
 
 권장 문서 항목:
 - 어떤 test를 언제 돌릴지
-- mock/file/hardware 테스트 차이
+- mock/file/Linux host validation 레이어 차이
 - 실패 시 먼저 봐야 할 포인트
 
 ## 5. 방법론
 
-### 5.1 correctness -> resilience -> hardware 순서
+### 5.1 correctness -> resilience -> Linux validation 순서
 - 먼저 정확성
 - 그 다음 중단/복구 내성
-- 마지막으로 실제 하드웨어 검증
+- 마지막으로 실제 Linux host persistence/recovery 검증
 
 ### 5.2 작은 테스트를 먼저, 긴 시나리오는 나중에
 - unit test가 빨라야 반복 속도가 유지된다.
@@ -220,9 +222,9 @@ mock 요구사항:
 - `~/Desktop/FlashDB/src/fdb_file.c`
 
 Rust/환경 참고:
-- STM32F302 대상 flash backend 문서
+- Linux std/file-backed simulator 실행 환경
 - `embedded-storage` trait 문서
-- 필요 시 probe-rs / cargo runner 설정
+- 필요 시 파일 기반 persistence 테스트용 tempfile / std::process 관련 문서
 
 ### 원본 FlashDB 참조 파일 정리
 - `~/Desktop/FlashDB/tests/fdb_kvdb_tc.c`
@@ -241,11 +243,11 @@ Rust/환경 참고:
 - TSDB append/query tests 통과
 - file-backed reboot simulation 통과
 - 최소 1개 Rust 예제 제공
-- STM32F302 하드웨어 smoke test 절차가 문서화됨
+- Linux host persistence/recovery validation 절차가 문서화됨
 
 ## 8. 후속 권장 작업
 
 이 문서까지 구현이 어느 정도 진행되면 다음 추가 문서 작성을 고려한다.
 - `docs/flashdb-onflash-format.md`
-- `docs/hardware-test-procedure.md`
+- `docs/linux-validation-procedure.md`
 - `docs/regression-test-catalog.md`

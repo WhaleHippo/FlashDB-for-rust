@@ -143,7 +143,7 @@
 완료 기준:
 - time-order, reverse, range query, rollover 동작 검증
 
-### Phase 7. host simulation + crash test + hardware validation
+### Phase 7. host simulation + crash test + Linux host validation
 목표:
 - 실제 안정성을 보장한다.
 
@@ -152,10 +152,10 @@
 - file-backed flash simulator
 - forced reboot / interrupted write test
 - Rust example
-- STM32F302 hardware smoke test
+- Linux host persistence/recovery smoke procedure
 
 완료 기준:
-- host 환경과 실제 보드에서 동일한 핵심 시나리오 통과
+- host 환경에서 canonical Linux validation flow까지 포함한 핵심 시나리오 통과
 
 ## 4. 추천 작업 순서
 
