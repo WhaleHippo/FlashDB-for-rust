@@ -21,6 +21,7 @@ fn tsdb_fixed_blob_mode_must_be_non_zero() {
         region: region(),
         blob_mode: BlobMode::Fixed(0),
         timestamp_policy: TimestampPolicy::StrictMonotonic,
+        rollover: false,
     };
 
     assert!(config.validate().is_err());

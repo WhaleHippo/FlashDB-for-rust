@@ -5,7 +5,7 @@
 
 ## 1. 현재 기준점
 
-- 현재 진행 중인 plan: `docs/plans/06-tsdb-plan.md`
+- 현재 진행 기준: `docs/plans/06-tsdb-plan.md` 완료
 - 전체 진행 위치:
   - plan 00: 해석 완료
   - plan 01: 완료
@@ -13,200 +13,160 @@
   - plan 03: 완료
   - plan 04: 완료
   - plan 05: 완료
-  - plan 06: 진행 중
+  - plan 06: 완료
   - plan 07 이후: 미구현
 
 즉, 현재 프로젝트는:
 - KVDB 쪽은 MVP + recovery/GC/iterator/integrity까지 구현 및 검증 완료 상태이고,
-- TSDB 쪽은 variable mode 기준으로 mount/append/forward iteration/reverse iteration/time-range query/query_count/status mutation/clean-reset까지 올라온 상태다.
+- TSDB 쪽은 variable/fixed blob mode 기준 mount/append/query/rollover/clean/reset까지 plan 06 완료 기준을 충족한 상태다.
 
-## 2. 이번에 plan 06에서 완료한 것
+## 2. 이번에 plan 06에서 마무리한 것
 
-plan 06은 아직 전부 끝난 것은 아니지만, 이번 기준에서는 correctness 우선의 세 번째 TSDB slice까지 구현했다.
+이번 작업에서는 progress snapshot에 남아 있던 plan 06의 마지막 공백을 메웠다.
+핵심은 다음 두 가지였다.
 
-### 2.1 TSDB runtime state / mount 기초
-`src/tsdb/db.rs`를 중심으로 TSDB 실구현을 시작했다.
+1. rollover on/off 정책 완성
+2. fixed-size blob mode 구현 및 reboot 복원 검증
+
+### 2.1 TSDB rollover 정책 완료
+`src/tsdb/db.rs`를 확장해 sector full 이후의 next-sector 선택을 plan 06 완료 기준에 맞게 마무리했다.
 
 구현된 내용:
-- `TsDb::mount(flash, config)` 추가
-- `TsDb<F>`를 실제 flash backend 위에서 동작하는 generic DB 타입으로 확장
-- region/write granularity 기반 `TsLayout` 런타임 계산
-- sector별 runtime metadata 복원
-  - `store_status`
-  - `start_time`
-  - `end_time`
-  - `empty_index_offset`
-  - `empty_data_offset`
-  - `entry_count`
-- mount 시 전체 sector를 스캔해
-  - `current_sector`
+- `TsdbConfig`에 `rollover: bool` 추가
+- `rollover=false`일 때 마지막 sector까지 가득 차면 `Error::NoSpace` 반환
+- `rollover=true`일 때 다음 sector를 ring처럼 순환 선택
+- 순환 대상 sector가 기존 데이터를 가지고 있으면 erase 후 재사용
+- wrap 이후에도
   - `oldest_sector`
+  - `current_sector`
   - `last_timestamp`
-  를 복원하도록 구현
+  이 올바르게 유지되도록 조정
+- TSDB snapshot/lookup 순회가 물리 sector 0..N 고정 순서가 아니라, `oldest_sector`부터 ring 순서로 순회하도록 수정
 
 원본 FlashDB 비교 메모:
-- upstream `src/fdb_tsdb.c`의 `read_sector_info`, `fdb_tsdb_init` 흐름을 참고했다.
-- 다만 현재 Rust 구현은 sector header의 `end_info`를 append 때마다 갱신하는 방식까지는 아직 구현하지 않았고,
-  mount 시 index area를 다시 스캔해서 current/oldest/last_time을 복원하는 보수적 구현을 채택했다.
-- 즉, mount/recovery semantics는 만족하지만 persistence 최적화는 아직 upstream과 1:1이 아니다.
+- upstream `src/fdb_tsdb.c`의 `update_sec_status`, `tsl_append`, sector wrap 흐름을 기준으로 구현했다.
+- Rust 구현도 sector full 후 next sector를 선택하고, rollover=true일 때 앞쪽 sector를 재사용하는 핵심 의미를 맞췄다.
+- 다만 upstream은 sector header의 `end_info[0/1]`를 append 경로에서 적극 활용하지만,
+  현재 Rust 구현은 mount 시 index area를 다시 스캔해서 runtime state를 복원하는 보수적 방식을 유지한다.
+- 즉, rollover semantics는 맞췄고, sector-header 기반 최적화는 후속 parity/optimization 항목으로 남겨두었다.
 
-### 2.2 format / append / multi-sector write
+### 2.2 fixed-size blob mode 구현
+기존에는 `BlobMode::Fixed(_)`가 TSDB에서 아예 거부되었는데, 이번에 실제 동작하도록 연결했다.
+
 구현된 내용:
-- `TsDb::format()` 추가
-- `TsDb::append(timestamp, payload)` 추가
-- variable blob mode 기준 dual-ended 배치 사용
-  - index는 sector header 뒤에서 앞으로 증가
-  - payload는 sector 끝에서 뒤로 감소
-- timestamp monotonic 정책 반영
-  - `TimestampPolicy::StrictMonotonic`
-  - `TimestampPolicy::AllowEqual`
-- sector 공간 부족 시 현재 sector를 `FULL`로 전이하고 다음 sector로 이동
-- non-rollover 구성에서는 더 이상 sector가 없으면 `Error::NoSpace` 반환
+- `BlobMode::Fixed(len)` -> `TsBlobMode::Fixed(len as u32)` 매핑 허용
+- fixed mode에서 index에는 timestamp/status만 기록하고,
+  payload 위치는 sector 내부 고정 slot 계산으로 복원
+- append 시 payload 길이가 fixed size와 정확히 일치해야 하도록 검증
+- iter / iter_reverse / mount recovery가 fixed mode payload를 올바르게 읽도록 수정
+- reboot 후에도 fixed mode record가 정상 복원되는 테스트 추가
 
 원본 FlashDB 비교 메모:
-- upstream `write_tsl`, `tsl_append`, `update_sec_status`가 사용하는 dual-ended append 아이디어를 그대로 유지했다.
-- 이번 기준에서도 rollover ring 정책까지는 아직 연결하지 않았고, 순차 sector advance까지만 구현했다.
+- upstream `read_tsl`이 fixed-size 모드에서 index address로 sector 내 payload 위치를 역산하는 방식을 참고했다.
+- 현재 Rust 구현도 동일한 방향으로, index에 log_addr/log_len을 저장하지 않고 slot 계산으로 payload 위치를 복원한다.
+- 즉, fixed-size payload 위치 계산 방식은 upstream 구조와 본질적으로 동일하다.
 
-### 2.3 forward iteration / reboot 복원
-구현된 내용:
-- `TsOwnedRecord { status, timestamp, payload }` 추가
-- `TsIterator` 추가
-- `TsDb::iter()` 추가
-- append 후 정방향 timestamp order 순회 가능
-- reboot 후 `mount()`를 다시 호출해도 append된 레코드가 같은 순서로 복원됨
+### 2.3 full sector mount/recovery 보정
+rollover + fixed mode를 붙이는 과정에서 sector가 index/data 경계까지 꽉 찬 경우 reboot scan이 payload 영역을 추가 index로 오해할 수 있는 경계 문제가 드러났다.
 
-의미:
-- plan 06의 권장 구현 순서인 "append path + forward iter 먼저" 단계가 완료되었다.
+조정한 내용:
+- mount scan이 단순히 sector 끝까지 index를 읽는 것이 아니라,
+  현재 계산된 `empty_data_offset`과 겹치지 않는 범위까지만 index를 읽도록 수정
+- 덕분에 full sector 상태에서도 reboot 후 `Decode(InvalidState)` 없이 정상 복원됨
 
-### 2.4 reverse iteration + iter_by_time + query_count
-이전 slice에서 완료한 것:
-- `TsDb::iter_reverse()` 추가
-- `TsDb::iter_by_time(from, to)` 추가
-- `TsDb::query_count(from, to, status)` 추가
+이 부분은 upstream의 `remain`, `empty_idx`, `empty_data` 관리 의미와 맞닿아 있으며,
+현재 Rust 구현에서도 동일한 dual-ended layout invariant를 더 정확히 지키도록 만든 수정이다.
 
-현재 구현 정책:
-- 먼저 전체 snapshot scan으로 correctness를 확보하는 구현을 채택했다.
-- `iter_reverse()`는 전체 record snapshot을 reverse하여 최신 timestamp부터 반환한다.
-- `iter_by_time(from, to)`는 inclusive 범위로 동작한다.
-  - `from <= to`이면 forward range iteration
-  - `from > to`이면 reverse range iteration
-- `query_count(from, to, status)`는 같은 inclusive 범위 안에서 status가 일치하는 항목 수를 센다.
+## 3. plan 06 완료 판단
 
-원본 FlashDB 비교 메모:
-- upstream `fdb_tsl_iter_reverse`, `search_start_tsl_addr`, `fdb_tsl_iter_by_time`, `fdb_tsl_query_count`를 참고했다.
-- 하지만 현재 Rust 구현은 sector header coarse filtering / sector 내부 시작점 탐색 최적화 대신,
-  full snapshot scan + filter 방식으로 correctness를 먼저 맞춘 상태다.
-- 즉, API semantics는 plan 06의 다음 단계와 맞추되, 탐색 최적화는 아직 후속 작업이다.
+이제 plan 06의 완료 기준은 충족했다고 판단한다.
 
-### 2.5 status mutation + clean/reset
-이번 slice에서 새로 완료한 것:
-- `TSL_USER_STATUS1`, `TSL_USER_STATUS2` 상수 추가
-- `TsDb::set_status(timestamp, status)` 추가
-- `TsDb::clean()` 추가
-- iterator/query가 `TSL_WRITE`뿐 아니라 상태가 바뀐 record도 그대로 노출/집계하도록 조정
+문서의 완료 기준:
+- append 후 forward iter 정상
+- reverse iter 정상
+- time-range query 정상
+- rollover on/off 정책 정상
+- clean/reset 정상
+- reboot 후 current/oldest/last_time 복원 가능
 
-현재 구현 정책:
-- `set_status(timestamp, status)`는 timestamp로 record를 찾아 상태 테이블을 추가 프로그래밍한다.
-- 현재는 strict monotonic timestamp 정책을 쓰는 기본 테스트 구성을 전제로 하므로 timestamp가 사실상 고유 키 역할을 한다.
-- 상태 전이는 monotonic 방향만 허용한다.
-  - 예: `WRITE -> USER_STATUS1`, `WRITE -> DELETED` 허용
-  - 역방향 전이는 거부
-- `clean()`은 전체 DB를 다시 format하는 안전한 reset wrapper로 구현했다.
+현재 상태:
+- forward iteration: 완료
+- reverse iteration: 완료
+- iter_by_time / query_count: 완료
+- status mutation: 완료
+- clean/reset: 완료
+- rollover=false no-space 정책: 완료
+- rollover=true ring overwrite 정책: 완료
+- reboot 후 current/oldest/last_timestamp 복원: 완료
+- fixed-size blob mode: 구현 완료
 
-원본 FlashDB 비교 메모:
-- upstream `fdb_tsl_set_status`도 index status table에 추가 프로그래밍하는 방식이라, 핵심 메커니즘은 동일한 방향이다.
-- upstream `fdb_tsl_clean`은 내부적으로 전체 sector format을 수행하는데, 현재 Rust 구현도 그 의미를 `format()` 재사용으로 맞췄다.
-- 다만 현재 public API는 upstream의 `fdb_tsl_t` 핸들 기반이 아니라 timestamp 기반 lookup을 사용한다는 차이가 있다.
-- 이 차이는 현재 Rust 코드베이스에서 검증 가능한 단순한 API를 우선 택한 결과이며, 향후 더 직접적인 record handle API로 바꿀 수 있다.
+따라서 plan 06은 더 이상 "진행 중"이 아니라 완료로 옮긴다.
 
-### 2.6 현재 의도적으로 남겨둔 범위
-이번 기준에서 아직 하지 않은 것:
-- rollover=true ring overwrite 정책
-- fixed-size blob mode
-- append 시 sector header `end_info[0/1]`를 upstream처럼 증분 갱신하는 최적화
-- range query에 대한 sector header coarse filtering / binary-search 유사 최적화
-- upstream에 더 가까운 record-handle 기반 status mutation surface
-
-이 항목들은 plan 06 안에서 다음 phase로 이어서 구현해야 한다.
-
-## 3. 이번 slice에서 수정된 파일
+## 4. 이번 slice에서 수정된 파일
 
 ### 코드
-- `src/layout/ts.rs`
+- `src/config.rs`
 - `src/tsdb/db.rs`
-- `src/tsdb/iter.rs`
 
 ### 테스트
+- `tests/config_validation.rs`
 - `tests/ts_basic.rs`
+- `tests/ts_rollover.rs`
 
 ### 문서
 - `docs/plans/progress.md`
 
-## 4. 테스트로 검증된 것
+## 5. 테스트로 검증된 것
 
-이번 slice도 TDD로 진행했다.
+이번 작업도 TDD로 진행했다.
 
 먼저 실패를 확인한 테스트:
-- `cargo test --test ts_basic`
-  - 처음에는 `TSL_USER_STATUS1`, `set_status`, `clean`이 없어 실패함을 확인
+- `cargo test --test ts_rollover`
+  - 처음에는 `TsdbConfig`에 rollover 설정이 없어서 컴파일 단계에서 실패
+  - 이후 rollover/fixed-mode 동작을 붙인 뒤에도 wrap 후 reboot에서 `Decode(InvalidState)`가 발생하는 실패를 재현
+  - sector full scan 경계를 수정한 뒤 통과
 
-이후 구현 후 통과한 검증:
-- `cargo test --test ts_basic`
+최종 통과한 검증:
+- `cargo test --test ts_rollover`
 - `cargo fmt`
 - `cargo test`
 - `cargo test --features std`
 
 직접 검증된 핵심 시나리오:
-- variable TSDB append가 timestamp 순서대로 기록됨
-- 단일 DB lifetime에서 forward iteration이 timestamp order를 유지함
-- sector 경계를 넘는 append 후 current sector가 다음 sector로 이동함
-- reboot 후 mount가 oldest/current/last_timestamp를 복원함
-- strict monotonic timestamp policy가 equal/older timestamp를 거부함
-- reverse iteration이 최신 timestamp부터 역순으로 record를 반환함
-- time-range query가 inclusive bounds로 동작함
-- `from > to`인 `iter_by_time`이 reverse range iteration으로 동작함
-- `query_count`가 status/time 조건을 함께 적용해 개수를 반환함
-- `set_status(20, TSL_USER_STATUS1)` 이후 iterator/query 결과가 새 status를 반영함
-- `clean()` 이후 모든 record가 사라지고 DB가 다시 append 가능한 초기 상태로 돌아감
-- clean 후 reboot해도 새로 쓴 record만 남음
+- rollover=false에서 마지막 sector 이후 append가 `Error::NoSpace`로 종료됨
+- rollover=true에서 oldest/current sector가 ring semantics에 맞게 갱신됨
+- rollover 후 살아 있는 record만 iteration 결과에 남음
+- rollover 후 reboot해도 oldest/current/last_timestamp와 live window가 유지됨
+- fixed blob mode에서 append / iter / iter_reverse / reboot recovery가 정상 동작함
+- fixed blob mode에서 payload 길이 불일치를 거부함
+- 기존 variable-mode TSDB 테스트와 KVDB 테스트 전부 회귀 없이 유지됨
 
-## 5. plan 06 현재 완료 판단
+## 6. 남아 있는 차이점과 후속 작업 성격
 
-현재는 plan 06의 "세 번째 구현 slice 완료"로 판단한다.
+plan 06 완료와 별개로, upstream 대비 아직 남아 있는 차이점은 있다.
+다만 이것들은 현재 문서의 완료 기준을 막는 필수 공백은 아니라서 plan 07 이전의 최적화/패리티 개선 항목으로 본다.
 
-구체적으로 완료된 phase:
-- Phase 1. TSDB runtime state 정의: 부분 완료
-- Phase 2. sector header / index mount logic: 부분 완료
-- Phase 3. append 구현: variable mode 기준 부분 완료
-- Phase 4. sector close / rollover 구현: sector close + next sector 이동만 부분 완료
-- Phase 5. forward iteration 구현: 완료
-- Phase 6. reverse iteration 구현: 완료
-- Phase 7. iter_by_time / query_count 구현: correctness-first 버전 완료
-- Phase 8. status mutation 구현: timestamp lookup 기반 버전 완료
-- Phase 9. clean/reset 구현: 완료
+대표 차이점:
+- append 시 sector header `end_info[0/1]`를 upstream처럼 증분 갱신하지 않음
+- mount 시 sector header 정보만으로 끝내지 않고 index area 재스캔으로 runtime state를 복원함
+- `iter_by_time` / `query_count`가 sector-level coarse filtering + 내부 search 최적화보다 correctness-first full scan에 가까움
+- `set_status(...)` public API가 upstream의 `fdb_tsl_t` 핸들 기반이 아니라 timestamp lookup 기반임
 
-아직 미완료라서 plan 06 전체 완료로 보지 않는 이유:
-- rollover ring 정책이 없음
-- fixed-size blob mode가 없음
-- sector header `end_info` 증분 갱신이 없음
-- range query의 sector-level filtering / search 최적화가 없음
-- status mutation surface가 upstream의 record-handle 방식과는 다름
+즉, semantics는 plan 06 완료 수준에 도달했고,
+앞으로 남은 것은 주로 upstream parity와 성능 최적화 성격이다.
 
-## 6. 다음 작업 우선순위
+## 7. 다음 작업 우선순위
 
 가장 추천하는 다음 단계:
-1. `docs/plans/06-tsdb-plan.md` 계속 진행
-   - 다음 slice는 rollover 정책 + oldest/current sector 갱신 고도화
-2. 그 다음 fixed blob mode
-3. 마지막으로 query 최적화와 `end_info` 증분 갱신
-4. plan 06이 충분히 닫히면 `docs/plans/07-testing-validation-and-rust-integration.md`
+1. `docs/plans/07-testing-validation-and-rust-integration.md`
+   - host simulation
+   - crash/recovery validation
+   - 실제 Rust integration 예제
+2. 필요하면 그 다음에 TSDB parity/optimization 정리
+   - `end_info` 증분 갱신
+   - range query sector filtering
+   - status mutation handle API 검토
 
-권장 구현 순서 메모:
-- 먼저 `fdb_tsdb.c`의 sector full 이후 next sector 선택과 oldest sector 갱신 흐름을 다시 대조하면서,
-  rollover=true일 때 ring처럼 재사용하는 정책을 구현하는 것이 좋다.
-- 그 다음 fixed blob mode를 붙이고,
-- 마지막으로 sector header coarse filtering / 내부 search 최적화를 추가하는 편이 자연스럽다.
+## 8. 다음 세션 시작용 한 줄 요약
 
-## 7. 다음 세션 시작용 한 줄 요약
-
-- "plan 06 진행 중. TSDB는 variable mode 기준 mount/format/append/forward iter/reverse iter/time-range query/query_count/status mutation/clean-reset과 reboot 복원까지 구현됐다. 다음은 rollover 정책과 fixed blob mode다."
+- "plan 06 완료. TSDB는 variable/fixed blob mode, forward/reverse/range query, status mutation, clean/reset, rollover on/off, reboot 복원까지 구현됐다. 다음은 plan 07 검증/통합 단계다."

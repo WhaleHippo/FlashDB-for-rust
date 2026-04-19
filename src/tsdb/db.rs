@@ -52,11 +52,7 @@ where
         let mode = blob_mode_from_config(config)?;
         let mut storage = NorFlashRegion::new(flash, region)?;
         let sectors = scan_all_sectors(&mut storage, &layout, mode)?;
-        let oldest_sector = sectors
-            .iter()
-            .enumerate()
-            .find(|(_, sector)| sector.entry_count > 0)
-            .map(|(index, _)| index as u32);
+        let oldest_sector = select_oldest_sector(&sectors);
         let last_timestamp = sectors.iter().filter_map(|sector| sector.end_time).max();
         let current_sector = select_current_sector(&sectors);
 
@@ -115,14 +111,13 @@ where
     pub fn append(&mut self, timestamp: u64, payload: &[u8]) -> Result<(), F::Error> {
         self.validate_timestamp(timestamp)?;
 
-        let aligned_payload_len = align_up(payload.len(), self.region().write_size() as usize)
-            .map_err(map_core_error::<F::Error>)?;
+        let payload_storage_len = self.payload_storage_len(payload)?;
         let index_len = self
             .layout
             .index_header_len(self.mode)
             .map_err(map_core_error::<F::Error>)? as u32;
         let needed = index_len
-            .checked_add(aligned_payload_len as u32)
+            .checked_add(payload_storage_len)
             .ok_or(Error::OutOfBounds)?;
         let sector_index = self.ensure_writable_sector(needed)?;
         let sector_base = self
@@ -130,6 +125,7 @@ where
             .sector_start(sector_index)
             .map_err(map_core_error::<F::Error>)?;
         let write_size = self.region().write_size() as usize;
+        let erase_size = self.region().erase_size();
 
         {
             let sector = &mut self.sectors[sector_index as usize];
@@ -146,12 +142,24 @@ where
             }
 
             let index_offset = sector.empty_index_offset;
-            let data_offset = sector
-                .empty_data_offset
-                .checked_sub(aligned_payload_len as u32)
-                .ok_or(Error::OutOfBounds)?;
+            let data_offset = data_offset_for_entry(
+                &self.layout,
+                self.mode,
+                erase_size,
+                sector_base,
+                sector.entry_count,
+                sector.empty_data_offset,
+                payload_storage_len,
+            )
+            .map_err(map_core_error::<F::Error>)?;
             let mut index_buf = vec![0u8; index_len as usize];
-            TsIndexHeader::variable(timestamp, data_offset, payload.len() as u32)
+            let index_header = match self.mode {
+                TsBlobMode::Variable => {
+                    TsIndexHeader::variable(timestamp, data_offset, payload.len() as u32)
+                }
+                TsBlobMode::Fixed(_) => TsIndexHeader::new(timestamp),
+            };
+            index_header
                 .encode(&self.layout, self.mode, &mut index_buf)
                 .map_err(map_core_error::<F::Error>)?;
             self.storage.write(index_offset, &index_buf)?;
@@ -178,9 +186,7 @@ where
             sector.store_status = SECTOR_STORE_USING;
         }
 
-        if self.oldest_sector.is_none() {
-            self.oldest_sector = Some(sector_index);
-        }
+        self.oldest_sector = select_oldest_sector(&self.sectors);
         self.current_sector = Some(sector_index);
         self.last_timestamp = Some(timestamp);
         Ok(())
@@ -248,7 +254,8 @@ where
 
     fn snapshot_records(&mut self) -> Result<Vec<TsOwnedRecord>, F::Error> {
         let mut records = Vec::new();
-        for sector_index in 0..self.region().sector_count() {
+        for sector_index in sector_iteration_order(self.region().sector_count(), self.oldest_sector)
+        {
             if self.sectors[sector_index as usize].entry_count == 0 {
                 continue;
             }
@@ -282,6 +289,7 @@ where
             .ok_or(Error::OutOfBounds)?;
         let empty_index = self.sectors[sector_index as usize].empty_index_offset;
         let mut index_buf = vec![0u8; index_len as usize];
+        let mut entry_index = 0_u32;
 
         while index_offset < empty_index {
             self.storage.read(index_offset, &mut index_buf)?;
@@ -290,24 +298,30 @@ where
             if header.status == TSL_PRE_WRITE || header.status == 0 {
                 break;
             }
-            if header.status != TSL_PRE_WRITE && header.status != 0 {
-                let log_addr = header.log_addr.ok_or(Error::CorruptedHeader)?;
-                let log_len = header.log_len.ok_or(Error::CorruptedHeader)?;
-                let log_end = log_addr.checked_add(log_len).ok_or(Error::OutOfBounds)?;
-                if log_addr < sector_base || log_end > sector_end {
-                    return Err(Error::CorruptedHeader);
-                }
-                let mut payload = vec![0u8; log_len as usize];
-                self.storage.read(log_addr, &mut payload)?;
-                out.push(TsOwnedRecord {
-                    status: header.status,
-                    timestamp: header.timestamp,
-                    payload,
-                });
+            let (log_addr, log_len) = record_location(
+                &self.layout,
+                self.mode,
+                self.region().erase_size(),
+                sector_base,
+                entry_index,
+                &header,
+            )
+            .map_err(map_core_error::<F::Error>)?;
+            let log_end = log_addr.checked_add(log_len).ok_or(Error::OutOfBounds)?;
+            if log_addr < sector_base || log_end > sector_end {
+                return Err(Error::CorruptedHeader);
             }
+            let mut payload = vec![0u8; log_len as usize];
+            self.storage.read(log_addr, &mut payload)?;
+            out.push(TsOwnedRecord {
+                status: header.status,
+                timestamp: header.timestamp,
+                payload,
+            });
             index_offset = index_offset
                 .checked_add(index_len)
                 .ok_or(Error::OutOfBounds)?;
+            entry_index = entry_index.checked_add(1).ok_or(Error::OutOfBounds)?;
         }
 
         Ok(())
@@ -323,7 +337,8 @@ where
             .map_err(map_core_error::<F::Error>)? as u32;
         let mut index_buf = vec![0u8; index_len as usize];
 
-        for sector_index in 0..self.region().sector_count() {
+        for sector_index in sector_iteration_order(self.region().sector_count(), self.oldest_sector)
+        {
             let sector = self.sectors[sector_index as usize];
             if sector.entry_count == 0 {
                 continue;
@@ -386,14 +401,43 @@ where
         }
     }
 
+    fn payload_storage_len(&self, payload: &[u8]) -> Result<u32, F::Error> {
+        match self.mode {
+            TsBlobMode::Variable => align_up(payload.len(), self.region().write_size() as usize)
+                .map(|len| len as u32)
+                .map_err(map_core_error::<F::Error>),
+            TsBlobMode::Fixed(len) => {
+                if payload.len() != len as usize {
+                    return Err(Error::InvariantViolation(
+                        "TSDB fixed blob mode requires exact payload length",
+                    ));
+                }
+                self.layout
+                    .fixed_blob_len(self.mode)
+                    .map(|len| len as u32)
+                    .map_err(map_core_error::<F::Error>)
+            }
+        }
+    }
+
     fn ensure_writable_sector(&mut self, needed: u32) -> Result<u32, F::Error> {
         let sector_count = self.region().sector_count();
         let mut sector_index = self.current_sector.unwrap_or(0);
+        let header_len = self
+            .layout
+            .sector_header_len()
+            .map_err(map_core_error::<F::Error>)? as u32;
+        if needed
+            > self
+                .region()
+                .erase_size()
+                .checked_sub(header_len)
+                .ok_or(Error::OutOfBounds)?
+        {
+            return Err(Error::NoSpace);
+        }
 
-        loop {
-            if sector_index >= sector_count {
-                return Err(Error::NoSpace);
-            }
+        for _ in 0..sector_count {
             let remaining = self.sector_remaining(sector_index)?;
             if remaining >= needed {
                 return Ok(sector_index);
@@ -404,9 +448,27 @@ where
             }
 
             self.mark_sector_full(sector_index)?;
-            sector_index = sector_index.checked_add(1).ok_or(Error::OutOfBounds)?;
-            self.current_sector = Some(sector_index);
+            let Some(next_sector) =
+                next_sector_index(sector_index, sector_count, self.config.rollover)
+            else {
+                self.current_sector = None;
+                return Err(Error::NoSpace);
+            };
+            if self.sectors[next_sector as usize].entry_count > 0
+                || self.sectors[next_sector as usize].store_status == SECTOR_STORE_FULL
+            {
+                if !self.config.rollover {
+                    self.current_sector = None;
+                    return Err(Error::NoSpace);
+                }
+                self.reset_sector(next_sector)?;
+            }
+            self.current_sector = Some(next_sector);
+            self.oldest_sector = select_oldest_sector(&self.sectors);
+            sector_index = next_sector;
         }
+
+        Err(Error::NoSpace)
     }
 
     fn sector_remaining(&self, sector_index: u32) -> Result<u32, F::Error> {
@@ -415,6 +477,19 @@ where
             .empty_data_offset
             .checked_sub(sector.empty_index_offset)
             .ok_or(Error::OutOfBounds)
+    }
+
+    fn reset_sector(&mut self, sector_index: u32) -> Result<(), F::Error> {
+        self.storage.erase_sector(sector_index)?;
+        let sector_base = self
+            .region()
+            .sector_start(sector_index)
+            .map_err(map_core_error::<F::Error>)?;
+        self.sectors[sector_index as usize] =
+            empty_sector_runtime(self.region(), &self.layout, sector_base)
+                .map_err(map_core_error::<F::Error>)?;
+        self.oldest_sector = select_oldest_sector(&self.sectors);
+        Ok(())
     }
 
     fn mark_sector_full(&mut self, sector_index: u32) -> Result<(), F::Error> {
@@ -443,9 +518,7 @@ where
 {
     match config.blob_mode {
         BlobMode::Variable => Ok(TsBlobMode::Variable),
-        BlobMode::Fixed(_) => Err(Error::InvariantViolation(
-            "TSDB fixed blob mode is not implemented yet",
-        )),
+        BlobMode::Fixed(len) => Ok(TsBlobMode::Fixed(len as u32)),
     }
 }
 
@@ -455,9 +528,9 @@ fn empty_sector_table(
     mode: TsBlobMode,
 ) -> Result<Vec<TsSectorRuntime>> {
     let sector_count = region.sector_count() as usize;
-    let header_len = layout.sector_header_len()? as u32;
     let sector_len = region.erase_size();
     let index_len = layout.index_header_len(mode)? as u32;
+    let header_len = layout.sector_header_len()? as u32;
     if header_len >= sector_len || index_len == 0 {
         return Err(Error::InvariantViolation(
             "TS layout does not fit inside the configured sector",
@@ -466,16 +539,24 @@ fn empty_sector_table(
     let mut sectors = Vec::with_capacity(sector_count);
     for sector_index in 0..region.sector_count() {
         let base = region.sector_start(sector_index)?;
-        sectors.push(TsSectorRuntime {
-            store_status: SECTOR_STORE_EMPTY,
-            start_time: None,
-            end_time: None,
-            empty_index_offset: base + header_len,
-            empty_data_offset: base + sector_len,
-            entry_count: 0,
-        });
+        sectors.push(empty_sector_runtime(region, layout, base)?);
     }
     Ok(sectors)
+}
+
+fn empty_sector_runtime(
+    region: &StorageRegion,
+    layout: &TsLayout,
+    sector_base: u32,
+) -> Result<TsSectorRuntime> {
+    Ok(TsSectorRuntime {
+        store_status: SECTOR_STORE_EMPTY,
+        start_time: None,
+        end_time: None,
+        empty_index_offset: sector_base + layout.sector_header_len()? as u32,
+        empty_data_offset: sector_base + region.erase_size(),
+        entry_count: 0,
+    })
 }
 
 fn scan_all_sectors<F>(
@@ -519,9 +600,10 @@ where
             .checked_add(header_len as u32)
             .ok_or(Error::OutOfBounds)?;
         let mut last_time = None;
+        let mut entry_index = 0_u32;
         while index_offset
             .checked_add(index_len)
-            .is_some_and(|end| end <= sector_end)
+            .is_some_and(|end| end <= sector.empty_data_offset)
         {
             storage.read(index_offset, &mut index_buf)?;
             if is_erased(&index_buf) {
@@ -532,10 +614,9 @@ where
             if entry.status == 0 || entry.status == TSL_PRE_WRITE {
                 break;
             }
-            let log_addr = entry.log_addr.ok_or(Error::CorruptedHeader)?;
-            let log_len = entry.log_len.ok_or(Error::CorruptedHeader)?;
-            let _aligned_len = align_up(log_len as usize, region.write_size() as usize)
-                .map_err(map_core_error::<F::Error>)? as u32;
+            let (log_addr, log_len) =
+                record_location(layout, mode, region.erase_size(), base, entry_index, &entry)
+                    .map_err(map_core_error::<F::Error>)?;
             let log_end = log_addr.checked_add(log_len).ok_or(Error::OutOfBounds)?;
             if log_addr < base || log_end > sector_end {
                 return Err(Error::CorruptedHeader);
@@ -547,11 +628,21 @@ where
             sector.entry_count += 1;
             last_time = Some(entry.timestamp);
             index_offset = sector.empty_index_offset;
+            entry_index = entry_index.checked_add(1).ok_or(Error::OutOfBounds)?;
         }
         sector.end_time = last_time;
     }
 
     Ok(sectors)
+}
+
+fn select_oldest_sector(sectors: &[TsSectorRuntime]) -> Option<u32> {
+    sectors
+        .iter()
+        .enumerate()
+        .filter(|(_, sector)| sector.entry_count > 0)
+        .min_by_key(|(_, sector)| sector.start_time.unwrap_or(u64::MAX))
+        .map(|(index, _)| index as u32)
 }
 
 fn select_current_sector(sectors: &[TsSectorRuntime]) -> Option<u32> {
@@ -571,6 +662,76 @@ fn select_current_sector(sectors: &[TsSectorRuntime]) -> Option<u32> {
         return Some(index as u32);
     }
     None
+}
+
+fn sector_iteration_order(sector_count: u32, oldest_sector: Option<u32>) -> Vec<u32> {
+    if sector_count == 0 {
+        return Vec::new();
+    }
+    let start = oldest_sector.unwrap_or(0) % sector_count;
+    (0..sector_count)
+        .map(|offset| (start + offset) % sector_count)
+        .collect()
+}
+
+fn next_sector_index(sector_index: u32, sector_count: u32, rollover: bool) -> Option<u32> {
+    if sector_index + 1 < sector_count {
+        Some(sector_index + 1)
+    } else if rollover {
+        Some(0)
+    } else {
+        None
+    }
+}
+
+fn data_offset_for_entry(
+    layout: &TsLayout,
+    mode: TsBlobMode,
+    sector_len: u32,
+    sector_base: u32,
+    entry_index: u32,
+    empty_data_offset: u32,
+    payload_storage_len: u32,
+) -> Result<u32> {
+    match mode {
+        TsBlobMode::Variable => empty_data_offset
+            .checked_sub(payload_storage_len)
+            .ok_or(Error::OutOfBounds),
+        TsBlobMode::Fixed(_) => {
+            let relative =
+                layout.fixed_blob_data_offset(sector_len as usize, mode, entry_index as usize)?
+                    as u32;
+            sector_base.checked_add(relative).ok_or(Error::OutOfBounds)
+        }
+    }
+}
+
+fn record_location(
+    layout: &TsLayout,
+    mode: TsBlobMode,
+    sector_len: u32,
+    sector_base: u32,
+    entry_index: u32,
+    header: &TsIndexHeader,
+) -> Result<(u32, u32)> {
+    match mode {
+        TsBlobMode::Variable => Ok((
+            header.log_addr.ok_or(Error::CorruptedHeader)?,
+            header.log_len.ok_or(Error::CorruptedHeader)?,
+        )),
+        TsBlobMode::Fixed(_) => {
+            let relative =
+                layout.fixed_blob_data_offset(sector_len as usize, mode, entry_index as usize)?
+                    as u32;
+            let log_len = layout.fixed_blob_len(mode)? as u32;
+            Ok((
+                sector_base
+                    .checked_add(relative)
+                    .ok_or(Error::OutOfBounds)?,
+                log_len,
+            ))
+        }
+    }
 }
 
 fn initialize_sector<F>(

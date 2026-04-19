@@ -78,6 +78,7 @@ pub struct TsdbConfig {
     pub region: StorageRegionConfig,
     pub blob_mode: BlobMode,
     pub timestamp_policy: TimestampPolicy,
+    pub rollover: bool,
 }
 
 impl TsdbConfig {

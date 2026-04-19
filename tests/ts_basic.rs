@@ -11,6 +11,7 @@ fn test_config() -> TsdbConfig {
         region: StorageRegionConfig::new(0, 512, 256, 4),
         blob_mode: BlobMode::Variable,
         timestamp_policy: TimestampPolicy::StrictMonotonic,
+        rollover: false,
     }
 }
 
