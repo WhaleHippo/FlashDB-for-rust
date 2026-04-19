@@ -90,3 +90,26 @@ fn tsdb_process_restart_preserves_clean_reset_across_reopen() {
 
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn tsdb_process_restart_preserves_deleted_status_across_reopen() {
+    let path = unique_path("ts-deleted-reboot");
+    let path_str = path.to_str().unwrap();
+
+    run_harness(&["ts-init-delete-window", path_str]);
+    run_harness(&["ts-set-deleted-and-reboot-check", path_str]);
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn kv_process_restart_recovers_from_corrupted_next_sector_header() {
+    let path = unique_path("kv-sector-header-corruption");
+    let path_str = path.to_str().unwrap();
+
+    run_harness(&["kv-init-two-sector-fill", path_str]);
+    run_harness(&["kv-corrupt-next-sector-header", path_str]);
+    run_harness(&["kv-check-corrupted-sector-recovery", path_str]);
+
+    std::fs::remove_file(path).unwrap();
+}

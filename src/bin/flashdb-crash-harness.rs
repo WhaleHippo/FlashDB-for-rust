@@ -18,8 +18,8 @@ fn real_main() -> Result<(), String> {
     use flashdb_for_rust::layout::common::ERASED_BYTE;
     use flashdb_for_rust::layout::kv::{KV_PRE_WRITE, KV_WRITE, KvLayout, KvRecordHeader};
     use flashdb_for_rust::layout::ts::{
-        SECTOR_STORE_EMPTY, SECTOR_STORE_FULL, SECTOR_STORE_USING, TSL_PRE_WRITE, TSL_USER_STATUS1,
-        TSL_WRITE, TsIndexHeader, TsLayout, TsSectorHeader,
+        SECTOR_STORE_EMPTY, SECTOR_STORE_FULL, SECTOR_STORE_USING, TSL_DELETED, TSL_PRE_WRITE,
+        TSL_USER_STATUS1, TSL_WRITE, TsIndexHeader, TsLayout, TsSectorHeader,
     };
     use flashdb_for_rust::storage::{FileFlashSimulator, NorFlashRegion, StorageRegion};
     use flashdb_for_rust::tsdb::TsDb;
@@ -40,6 +40,14 @@ fn real_main() -> Result<(), String> {
             region: StorageRegionConfig::new(0, 1024, 256, 4),
             max_key_len: 32,
             max_value_len: 128,
+        }
+    }
+
+    fn kv_two_sector_config() -> KvConfig {
+        KvConfig {
+            region: StorageRegionConfig::new(0, 512, 256, 4),
+            max_key_len: 8,
+            max_value_len: 176,
         }
     }
 
@@ -268,6 +276,28 @@ fn real_main() -> Result<(), String> {
         Ok(storage.into_inner())
     }
 
+    fn corrupt_kv_sector_magic(
+        flash: CrashFlash,
+        config: KvConfig,
+        sector_index: u32,
+    ) -> Result<CrashFlash, String> {
+        let region = StorageRegion::new(config.region).map_err(|err| format!("region: {err:?}"))?;
+        let mut storage =
+            NorFlashRegion::new(flash, region).map_err(|err| format!("storage: {err:?}"))?;
+        let sector_base = storage
+            .region()
+            .sector_start(sector_index)
+            .map_err(|err| format!("sector_start: {err:?}"))?;
+        let magic_offset = kv_layout()
+            .sector_magic_offset()
+            .map_err(|err| format!("sector_magic_offset: {err:?}"))?
+            as u32;
+        storage
+            .write(sector_base + magic_offset, &[0x00, 0x00, 0x00, 0x00])
+            .map_err(|err| format!("corrupt sector magic: {err:?}"))?;
+        Ok(storage.into_inner())
+    }
+
     let mut args = std::env::args().skip(1);
     let Some(command) = args.next() else {
         return Err("usage: flashdb-crash-harness <command> <path>".into());
@@ -320,6 +350,14 @@ fn real_main() -> Result<(), String> {
             db.set("answer", b"good")
                 .map_err(|err| format!("set answer: {err:?}"))?;
         }
+        "kv-init-two-sector-fill" => {
+            let mut db = KvDb::mount(open_flash(&path)?, kv_two_sector_config())
+                .map_err(|err| format!("mount: {err:?}"))?;
+            db.format().map_err(|err| format!("format: {err:?}"))?;
+            let filler = [b'x'; 176];
+            db.set("fill", &filler)
+                .map_err(|err| format!("set fill: {err:?}"))?;
+        }
         "kv-inject-crc-tail" => {
             let db = KvDb::mount(open_flash(&path)?, kv_config())
                 .map_err(|err| format!("mount: {err:?}"))?;
@@ -349,6 +387,36 @@ fn real_main() -> Result<(), String> {
             }
             db.set("fresh", b"after-crc-recovery")
                 .map_err(|err| format!("set fresh: {err:?}"))?;
+        }
+        "kv-corrupt-next-sector-header" => {
+            let flash = open_flash(&path)?;
+            let _flash = corrupt_kv_sector_magic(flash, kv_two_sector_config(), 1)?;
+        }
+        "kv-check-corrupted-sector-recovery" => {
+            let mut db = KvDb::mount(open_flash(&path)?, kv_two_sector_config())
+                .map_err(|err| format!("mount: {err:?}"))?;
+            let filler = [b'x'; 176];
+            let mut buf = [0u8; 176];
+            let len = db
+                .get_blob_into("fill", &mut buf)
+                .map_err(|err| format!("get fill: {err:?}"))?
+                .ok_or_else(|| "missing fill after sector recovery".to_string())?;
+            if &buf[..len] != &filler {
+                return Err(format!(
+                    "expected fill payload to survive, got {:?}",
+                    &buf[..len]
+                ));
+            }
+            db.set("next", b"sector-reused")
+                .map_err(|err| format!("set next after sector recovery: {err:?}"))?;
+            let mut small = [0u8; 32];
+            let len = db
+                .get_blob_into("next", &mut small)
+                .map_err(|err| format!("get next: {err:?}"))?
+                .ok_or_else(|| "missing next after sector recovery".to_string())?;
+            if &small[..len] != b"sector-reused" {
+                return Err(format!("expected sector-reused, got {:?}", &small[..len]));
+            }
         }
         "ts-init-seed" => {
             let mut db = TsDb::mount(open_flash(&path)?, ts_config())
@@ -496,6 +564,19 @@ fn real_main() -> Result<(), String> {
             db.set_status(20, TSL_USER_STATUS1)
                 .map_err(|err| format!("set_status clean: {err:?}"))?;
         }
+        "ts-init-delete-window" => {
+            let mut db = TsDb::mount(open_flash(&path)?, ts_config())
+                .map_err(|err| format!("mount ts: {err:?}"))?;
+            db.format().map_err(|err| format!("format ts: {err:?}"))?;
+            for (timestamp, payload) in [
+                (10_u64, b"one".as_slice()),
+                (20, b"two".as_slice()),
+                (30, b"three".as_slice()),
+            ] {
+                db.append(timestamp, payload)
+                    .map_err(|err| format!("append delete window {timestamp}: {err:?}"))?;
+            }
+        }
         "ts-clean-and-reboot-check" => {
             let mut db = TsDb::mount(open_flash(&path)?, ts_config())
                 .map_err(|err| format!("mount ts: {err:?}"))?;
@@ -534,6 +615,39 @@ fn real_main() -> Result<(), String> {
                         .iter()
                         .map(|record| record.timestamp)
                         .collect::<Vec<_>>()
+                ));
+            }
+        }
+        "ts-set-deleted-and-reboot-check" => {
+            let mut db = TsDb::mount(open_flash(&path)?, ts_config())
+                .map_err(|err| format!("mount ts: {err:?}"))?;
+            db.set_status(20, TSL_DELETED)
+                .map_err(|err| format!("set_status deleted: {err:?}"))?;
+            let flash = db.into_flash();
+            let mut rebooted =
+                TsDb::mount(flash, ts_config()).map_err(|err| format!("remount ts: {err:?}"))?;
+            let records = rebooted
+                .iter_by_time(10, 30)
+                .map_err(|err| format!("iter_by_time after deleted: {err:?}"))?
+                .collect::<Vec<_>>();
+            let statuses = records
+                .iter()
+                .map(|record| record.status)
+                .collect::<Vec<_>>();
+            if statuses != vec![TSL_WRITE, TSL_DELETED, TSL_WRITE] {
+                return Err(format!(
+                    "expected statuses [WRITE, DELETED, WRITE], got {statuses:?}"
+                ));
+            }
+            let deleted_count = rebooted
+                .query_count(10, 30, TSL_DELETED)
+                .map_err(|err| format!("query_count deleted: {err:?}"))?;
+            let write_count = rebooted
+                .query_count(10, 30, TSL_WRITE)
+                .map_err(|err| format!("query_count write: {err:?}"))?;
+            if deleted_count != 1 || write_count != 2 {
+                return Err(format!(
+                    "expected deleted=1 and write=2, got deleted={deleted_count}, write={write_count}"
                 ));
             }
         }

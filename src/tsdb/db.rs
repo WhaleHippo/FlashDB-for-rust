@@ -251,12 +251,14 @@ where
         }
         let write_size = self.region().write_size() as usize;
         let mut scratch = [0u8; MAX_RUNTIME_WRITE_SIZE];
-        self.layout.tsl_status_scheme().write_transition(
-            &mut self.storage,
-            index_offset,
-            status,
-            &mut scratch[..write_size],
-        )?;
+        for next_status in (current_status + 1)..=status {
+            self.layout.tsl_status_scheme().write_transition(
+                &mut self.storage,
+                index_offset,
+                next_status,
+                &mut scratch[..write_size],
+            )?;
+        }
         Ok(true)
     }
 
