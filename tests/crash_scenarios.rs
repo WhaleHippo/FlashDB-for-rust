@@ -45,3 +45,26 @@ fn kv_process_restart_recovers_from_crc_mismatched_tail() {
 
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn tsdb_process_restart_recovers_from_pre_write_tail() {
+    let path = unique_path("ts-pre-write-tail");
+    let path_str = path.to_str().unwrap();
+
+    run_harness(&["ts-init-seed", path_str]);
+    run_harness(&["ts-inject-prewrite-tail", path_str]);
+    run_harness(&["ts-check-seed-and-append-fresh", path_str]);
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn tsdb_process_restart_preserves_query_and_reverse_iteration_after_reopen() {
+    let path = unique_path("ts-reboot-query");
+    let path_str = path.to_str().unwrap();
+
+    run_harness(&["ts-init-window", path_str]);
+    run_harness(&["ts-check-window-query", path_str]);
+
+    std::fs::remove_file(path).unwrap();
+}

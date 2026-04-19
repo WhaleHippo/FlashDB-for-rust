@@ -308,8 +308,14 @@ where
             self.storage.read(index_offset, index_buf)?;
             let header = TsIndexHeader::decode(&self.layout, self.mode, index_buf)
                 .map_err(map_core_error::<F::Error>)?;
-            if header.status == TSL_PRE_WRITE || header.status == 0 {
+            if header.status == 0 {
                 break;
+            }
+            if header.status == TSL_PRE_WRITE {
+                index_offset = index_offset
+                    .checked_add(index_len)
+                    .ok_or(Error::OutOfBounds)?;
+                continue;
             }
             let (log_addr, log_len) = record_location(
                 &self.layout,
@@ -387,8 +393,14 @@ where
                 self.storage.read(index_offset, index_buf)?;
                 let header = TsIndexHeader::decode(&self.layout, self.mode, &index_buf)
                     .map_err(map_core_error::<F::Error>)?;
-                if header.status == 0 || header.status == TSL_PRE_WRITE {
+                if header.status == 0 {
                     break;
+                }
+                if header.status == TSL_PRE_WRITE {
+                    index_offset = index_offset
+                        .checked_add(index_len)
+                        .ok_or(Error::OutOfBounds)?;
+                    continue;
                 }
                 if header.timestamp == timestamp {
                     return Ok(Some((index_offset, header.status)));
@@ -659,8 +671,23 @@ where
             }
             let entry = TsIndexHeader::decode(layout, mode, &index_buf[..index_len as usize])
                 .map_err(map_core_error::<F::Error>)?;
-            if entry.status == 0 || entry.status == TSL_PRE_WRITE {
+            if entry.status == 0 {
                 break;
+            }
+            if entry.status == TSL_PRE_WRITE {
+                let (log_addr, log_len) =
+                    record_location(layout, mode, region.erase_size(), base, entry_index, &entry)
+                        .map_err(map_core_error::<F::Error>)?;
+                let log_end = log_addr.checked_add(log_len).ok_or(Error::OutOfBounds)?;
+                if log_addr < base || log_end > sector_end {
+                    return Err(Error::CorruptedHeader);
+                }
+                sector.empty_index_offset = index_offset
+                    .checked_add(index_len)
+                    .ok_or(Error::OutOfBounds)?;
+                sector.empty_data_offset = log_addr;
+                index_offset = sector.empty_index_offset;
+                continue;
             }
             let (log_addr, log_len) =
                 record_location(layout, mode, region.erase_size(), base, entry_index, &entry)
