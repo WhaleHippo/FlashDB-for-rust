@@ -60,6 +60,10 @@ fn real_main() -> Result<(), String> {
         }
     }
 
+    fn ts_two_sector_fill_payload() -> [u8; 56] {
+        [0xCD; 56]
+    }
+
     fn kv_layout() -> KvLayout {
         KvLayout::new(32).expect("KV layout should be constructible")
     }
@@ -343,6 +347,28 @@ fn real_main() -> Result<(), String> {
         Ok(storage.into_inner())
     }
 
+    fn corrupt_ts_sector_magic(
+        flash: CrashFlash,
+        config: TsdbConfig,
+        sector_index: u32,
+    ) -> Result<CrashFlash, String> {
+        let region = StorageRegion::new(config.region).map_err(|err| format!("region: {err:?}"))?;
+        let mut storage =
+            NorFlashRegion::new(flash, region).map_err(|err| format!("storage: {err:?}"))?;
+        let sector_base = storage
+            .region()
+            .sector_start(sector_index)
+            .map_err(|err| format!("sector_start: {err:?}"))?;
+        let magic_offset = ts_layout()
+            .sector_magic_offset()
+            .map_err(|err| format!("sector_magic_offset: {err:?}"))?
+            as u32;
+        storage
+            .write(sector_base + magic_offset, &[0x00, 0x00, 0x00, 0x00])
+            .map_err(|err| format!("corrupt ts sector magic: {err:?}"))?;
+        Ok(storage.into_inner())
+    }
+
     let mut args = std::env::args().skip(1);
     let Some(command) = args.next() else {
         return Err("usage: flashdb-crash-harness <command> <path>".into());
@@ -472,6 +498,16 @@ fn real_main() -> Result<(), String> {
             db.append(20, b"two")
                 .map_err(|err| format!("append 20: {err:?}"))?;
         }
+        "ts-init-two-sector-fill" => {
+            let mut db = TsDb::mount(open_flash(&path)?, ts_config())
+                .map_err(|err| format!("mount ts: {err:?}"))?;
+            db.format().map_err(|err| format!("format ts: {err:?}"))?;
+            let payload = ts_two_sector_fill_payload();
+            for ts in [10_u64, 20, 30, 40] {
+                db.append(ts, &payload)
+                    .map_err(|err| format!("append two-sector fill {ts}: {err:?}"))?;
+            }
+        }
         "ts-inject-prewrite-tail" => {
             let flash = open_flash(&path)?;
             let _flash = inject_ts_prewrite_tail(flash, ts_config(), 30, b"broken-tail")?;
@@ -479,6 +515,10 @@ fn real_main() -> Result<(), String> {
         "ts-inject-corrupted-index-tail" => {
             let flash = open_flash(&path)?;
             let _flash = inject_ts_corrupted_index_tail(flash, ts_config(), 30, 11)?;
+        }
+        "ts-corrupt-next-sector-header" => {
+            let flash = open_flash(&path)?;
+            let _flash = corrupt_ts_sector_magic(flash, ts_config(), 1)?;
         }
         "ts-check-seed-and-append-fresh" => {
             let mut db = TsDb::mount(open_flash(&path)?, ts_config())
@@ -502,6 +542,39 @@ fn real_main() -> Result<(), String> {
             if count != 3 {
                 return Err(format!(
                     "expected 3 live records after recovery, got {count}"
+                ));
+            }
+        }
+        "ts-check-corrupted-sector-recovery" => {
+            let mut db = TsDb::mount(open_flash(&path)?, ts_config())
+                .map_err(|err| format!("mount ts: {err:?}"))?;
+            let records = db
+                .iter()
+                .map_err(|err| format!("iter after sector recovery: {err:?}"))?
+                .collect::<Vec<_>>();
+            let timestamps = records
+                .iter()
+                .map(|record| record.timestamp)
+                .collect::<Vec<_>>();
+            if timestamps != vec![10, 20] {
+                return Err(format!(
+                    "expected surviving timestamps [10, 20], got {timestamps:?}"
+                ));
+            }
+            let payload = ts_two_sector_fill_payload();
+            db.append(50, &payload)
+                .map_err(|err| format!("append after ts sector recovery: {err:?}"))?;
+            let recovered = db
+                .iter()
+                .map_err(|err| format!("iter after ts sector append: {err:?}"))?
+                .collect::<Vec<_>>();
+            let recovered_timestamps = recovered
+                .iter()
+                .map(|record| record.timestamp)
+                .collect::<Vec<_>>();
+            if recovered_timestamps != vec![10, 20, 50] {
+                return Err(format!(
+                    "expected [10, 20, 50] after ts sector recovery, got {recovered_timestamps:?}"
                 ));
             }
         }

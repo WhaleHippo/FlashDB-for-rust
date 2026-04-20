@@ -708,8 +708,13 @@ where
         if is_erased(&header_buf[..header_len]) {
             continue;
         }
-        let header = TsSectorHeader::decode(layout, &header_buf[..header_len])
-            .map_err(map_core_error::<F::Error>)?;
+        let header = match TsSectorHeader::decode(layout, &header_buf[..header_len]) {
+            Ok(header) => header,
+            Err(_) => {
+                storage.erase_sector(sector_index)?;
+                continue;
+            }
+        };
         let sector = &mut sectors[sector_index as usize];
         sector.store_status = header.store_status;
         sector.start_time = sentinel_to_option(header.start_time);

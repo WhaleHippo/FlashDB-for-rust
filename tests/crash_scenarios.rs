@@ -125,3 +125,15 @@ fn tsdb_process_restart_recovers_from_corrupted_index_tail() {
 
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn tsdb_process_restart_recovers_from_corrupted_next_sector_header() {
+    let path = unique_path("ts-sector-header-corruption");
+    let path_str = path.to_str().unwrap();
+
+    run_harness(&["ts-init-two-sector-fill", path_str]);
+    run_harness(&["ts-corrupt-next-sector-header", path_str]);
+    run_harness(&["ts-check-corrupted-sector-recovery", path_str]);
+
+    std::fs::remove_file(path).unwrap();
+}
