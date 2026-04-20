@@ -280,6 +280,36 @@ fn real_main() -> Result<(), String> {
         Ok(storage.into_inner())
     }
 
+    fn inject_ts_partial_payload_tail(
+        flash: CrashFlash,
+        config: TsdbConfig,
+        timestamp: u64,
+        payload: &[u8],
+        partial_len: usize,
+    ) -> Result<CrashFlash, String> {
+        let flash = inject_ts_prewrite_tail(flash, config, timestamp, payload)?;
+        let mut flash_for_scan = flash.clone();
+        let cursors = scan_ts_sector_cursors(&mut flash_for_scan, config)?;
+        let current_sector = select_ts_current_sector(&cursors)
+            .ok_or_else(|| "no writable TS sector found after prewrite tail".to_string())?;
+        let cursor = cursors[current_sector as usize];
+        let payload_storage_len = ts_payload_storage_len(payload.len(), 4);
+        let data_offset = cursor
+            .empty_data_offset
+            .checked_sub(payload_storage_len)
+            .ok_or_else(|| "payload does not fit in current sector".to_string())?;
+        let region = StorageRegion::new(config.region).map_err(|err| format!("region: {err:?}"))?;
+        let mut storage =
+            NorFlashRegion::new(flash, region).map_err(|err| format!("storage: {err:?}"))?;
+        let write_len = partial_len.min(payload.len());
+        let write_len = write_len.max(1);
+        let mut scratch = [0u8; 4];
+        storage
+            .write_aligned(data_offset, &payload[..write_len], &mut scratch)
+            .map_err(|err| format!("write partial ts payload: {err:?}"))?;
+        Ok(storage.into_inner())
+    }
+
     fn inject_ts_corrupted_index_tail(
         flash: CrashFlash,
         config: TsdbConfig,
@@ -511,6 +541,11 @@ fn real_main() -> Result<(), String> {
         "ts-inject-prewrite-tail" => {
             let flash = open_flash(&path)?;
             let _flash = inject_ts_prewrite_tail(flash, ts_config(), 30, b"broken-tail")?;
+        }
+        "ts-inject-partial-payload-tail" => {
+            let flash = open_flash(&path)?;
+            let _flash =
+                inject_ts_partial_payload_tail(flash, ts_config(), 30, b"broken-tail-payload", 7)?;
         }
         "ts-inject-corrupted-index-tail" => {
             let flash = open_flash(&path)?;
