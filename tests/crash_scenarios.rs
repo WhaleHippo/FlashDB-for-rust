@@ -113,3 +113,15 @@ fn kv_process_restart_recovers_from_corrupted_next_sector_header() {
 
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn tsdb_process_restart_recovers_from_corrupted_index_tail() {
+    let path = unique_path("ts-index-tail-corruption");
+    let path_str = path.to_str().unwrap();
+
+    run_harness(&["ts-init-seed", path_str]);
+    run_harness(&["ts-inject-corrupted-index-tail", path_str]);
+    run_harness(&["ts-check-seed-and-append-fresh", path_str]);
+
+    std::fs::remove_file(path).unwrap();
+}

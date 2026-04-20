@@ -276,6 +276,51 @@ fn real_main() -> Result<(), String> {
         Ok(storage.into_inner())
     }
 
+    fn inject_ts_corrupted_index_tail(
+        flash: CrashFlash,
+        config: TsdbConfig,
+        timestamp: u64,
+        payload_len: u32,
+    ) -> Result<CrashFlash, String> {
+        let mut flash_for_scan = flash.clone();
+        let cursors = scan_ts_sector_cursors(&mut flash_for_scan, config)?;
+        let current_sector = select_ts_current_sector(&cursors)
+            .ok_or_else(|| "no writable TS sector found".to_string())?;
+        let cursor = cursors[current_sector as usize];
+
+        let region = StorageRegion::new(config.region).map_err(|err| format!("region: {err:?}"))?;
+        let mut storage =
+            NorFlashRegion::new(flash, region).map_err(|err| format!("storage: {err:?}"))?;
+        let sector_base = storage
+            .region()
+            .sector_start(current_sector)
+            .map_err(|err| format!("sector_start: {err:?}"))?;
+        let sector_end = sector_base
+            .checked_add(storage.region().erase_size())
+            .ok_or_else(|| "sector end overflow".to_string())?;
+        let bogus_log_addr = sector_end
+            .checked_add(4)
+            .ok_or_else(|| "bogus log addr overflow".to_string())?;
+        let layout = ts_layout();
+        let index_len = layout
+            .index_header_len(flashdb_for_rust::layout::ts::TsBlobMode::Variable)
+            .map_err(|err| format!("index_header_len: {err:?}"))?;
+        let mut header = TsIndexHeader::variable(timestamp, bogus_log_addr, payload_len);
+        header.status = TSL_WRITE;
+        let mut index_buf = vec![0xFF; index_len];
+        header
+            .encode(
+                &layout,
+                flashdb_for_rust::layout::ts::TsBlobMode::Variable,
+                &mut index_buf,
+            )
+            .map_err(|err| format!("encode corrupted ts index: {err:?}"))?;
+        storage
+            .write(cursor.empty_index_offset, &index_buf)
+            .map_err(|err| format!("write corrupted ts index: {err:?}"))?;
+        Ok(storage.into_inner())
+    }
+
     fn corrupt_kv_sector_magic(
         flash: CrashFlash,
         config: KvConfig,
@@ -430,6 +475,10 @@ fn real_main() -> Result<(), String> {
         "ts-inject-prewrite-tail" => {
             let flash = open_flash(&path)?;
             let _flash = inject_ts_prewrite_tail(flash, ts_config(), 30, b"broken-tail")?;
+        }
+        "ts-inject-corrupted-index-tail" => {
+            let flash = open_flash(&path)?;
+            let _flash = inject_ts_corrupted_index_tail(flash, ts_config(), 30, 11)?;
         }
         "ts-check-seed-and-append-fresh" => {
             let mut db = TsDb::mount(open_flash(&path)?, ts_config())

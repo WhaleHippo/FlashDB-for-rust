@@ -308,8 +308,16 @@ where
 
         while index_offset < empty_index {
             self.storage.read(index_offset, index_buf)?;
-            let header = TsIndexHeader::decode(&self.layout, self.mode, index_buf)
-                .map_err(map_core_error::<F::Error>)?;
+            let header = match TsIndexHeader::decode(&self.layout, self.mode, index_buf) {
+                Ok(header) => header,
+                Err(_) if matches!(self.mode, TsBlobMode::Variable) => {
+                    index_offset = index_offset
+                        .checked_add(index_len)
+                        .ok_or(Error::OutOfBounds)?;
+                    continue;
+                }
+                Err(err) => return Err(map_core_error::<F::Error>(err)),
+            };
             if header.status == 0 {
                 break;
             }
@@ -330,6 +338,12 @@ where
             .map_err(map_core_error::<F::Error>)?;
             let log_end = log_addr.checked_add(log_len).ok_or(Error::OutOfBounds)?;
             if log_addr < sector_base || log_end > sector_end {
+                if matches!(self.mode, TsBlobMode::Variable) {
+                    index_offset = index_offset
+                        .checked_add(index_len)
+                        .ok_or(Error::OutOfBounds)?;
+                    continue;
+                }
                 return Err(Error::CorruptedHeader);
             }
             if log_len as usize > MAX_TS_PAYLOAD_LEN {
@@ -384,6 +398,9 @@ where
                 .region()
                 .sector_start(sector_index)
                 .map_err(map_core_error::<F::Error>)?;
+            let sector_end = sector_base
+                .checked_add(self.region().erase_size())
+                .ok_or(Error::OutOfBounds)?;
             let mut index_offset = sector_base
                 .checked_add(
                     self.layout
@@ -393,8 +410,16 @@ where
                 .ok_or(Error::OutOfBounds)?;
             while index_offset < sector.empty_index_offset {
                 self.storage.read(index_offset, index_buf)?;
-                let header = TsIndexHeader::decode(&self.layout, self.mode, &index_buf)
-                    .map_err(map_core_error::<F::Error>)?;
+                let header = match TsIndexHeader::decode(&self.layout, self.mode, &index_buf) {
+                    Ok(header) => header,
+                    Err(_) if matches!(self.mode, TsBlobMode::Variable) => {
+                        index_offset = index_offset
+                            .checked_add(index_len)
+                            .ok_or(Error::OutOfBounds)?;
+                        continue;
+                    }
+                    Err(err) => return Err(map_core_error::<F::Error>(err)),
+                };
                 if header.status == 0 {
                     break;
                 }
@@ -403,6 +428,25 @@ where
                         .checked_add(index_len)
                         .ok_or(Error::OutOfBounds)?;
                     continue;
+                }
+                let (log_addr, log_len) = record_location(
+                    &self.layout,
+                    self.mode,
+                    self.region().erase_size(),
+                    sector_base,
+                    0,
+                    &header,
+                )
+                .map_err(map_core_error::<F::Error>)?;
+                let log_end = log_addr.checked_add(log_len).ok_or(Error::OutOfBounds)?;
+                if log_addr < sector_base || log_end > sector_end {
+                    if matches!(self.mode, TsBlobMode::Variable) {
+                        index_offset = index_offset
+                            .checked_add(index_len)
+                            .ok_or(Error::OutOfBounds)?;
+                        continue;
+                    }
+                    return Err(Error::CorruptedHeader);
                 }
                 if header.timestamp == timestamp {
                     return Ok(Some((index_offset, header.status)));
@@ -621,6 +665,21 @@ fn empty_sector_runtime(
     })
 }
 
+fn skip_variable_corrupted_tail(
+    mode: TsBlobMode,
+    sector: &mut TsSectorRuntime,
+    index_offset: u32,
+    index_len: u32,
+) -> Result<bool> {
+    if !matches!(mode, TsBlobMode::Variable) {
+        return Ok(false);
+    }
+    sector.empty_index_offset = index_offset
+        .checked_add(index_len)
+        .ok_or(Error::OutOfBounds)?;
+    Ok(true)
+}
+
 fn scan_all_sectors<F>(
     storage: &mut NorFlashRegion<F>,
     layout: &TsLayout,
@@ -671,8 +730,18 @@ where
             if is_erased(&index_buf[..index_len as usize]) {
                 break;
             }
-            let entry = TsIndexHeader::decode(layout, mode, &index_buf[..index_len as usize])
-                .map_err(map_core_error::<F::Error>)?;
+            let entry = match TsIndexHeader::decode(layout, mode, &index_buf[..index_len as usize])
+            {
+                Ok(entry) => entry,
+                Err(_)
+                    if skip_variable_corrupted_tail(mode, sector, index_offset, index_len)
+                        .map_err(map_core_error::<F::Error>)? =>
+                {
+                    index_offset = sector.empty_index_offset;
+                    continue;
+                }
+                Err(err) => return Err(map_core_error::<F::Error>(err)),
+            };
             if entry.status == 0 {
                 break;
             }
@@ -682,6 +751,12 @@ where
                         .map_err(map_core_error::<F::Error>)?;
                 let log_end = log_addr.checked_add(log_len).ok_or(Error::OutOfBounds)?;
                 if log_addr < base || log_end > sector_end {
+                    if skip_variable_corrupted_tail(mode, sector, index_offset, index_len)
+                        .map_err(map_core_error::<F::Error>)?
+                    {
+                        index_offset = sector.empty_index_offset;
+                        continue;
+                    }
                     return Err(Error::CorruptedHeader);
                 }
                 sector.empty_index_offset = index_offset
@@ -696,6 +771,12 @@ where
                     .map_err(map_core_error::<F::Error>)?;
             let log_end = log_addr.checked_add(log_len).ok_or(Error::OutOfBounds)?;
             if log_addr < base || log_end > sector_end {
+                if skip_variable_corrupted_tail(mode, sector, index_offset, index_len)
+                    .map_err(map_core_error::<F::Error>)?
+                {
+                    index_offset = sector.empty_index_offset;
+                    continue;
+                }
                 return Err(Error::CorruptedHeader);
             }
             sector.empty_index_offset = index_offset

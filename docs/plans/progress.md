@@ -14,7 +14,7 @@
   - plan 04: 완료
   - plan 05: 완료
   - plan 06: 완료
-  - plan 07: 4차 crash/reboot simulation slice 완료
+  - plan 07: 5차 crash/reboot simulation slice 진행 중
   - plan 07.5: 완료
 
 현재 프로젝트는 다음 상태다.
@@ -24,44 +24,34 @@
 - Linux host 테스트와 std feature 테스트는 계속 유지된다.
 - embedded example 2종(stm32f401re, nrf5340)은 allocator 없이 빌드된다.
 - std-only file-backed simulator가 실제 `NorFlash` 백엔드로 동작하며 KV/TSDB reboot 회귀를 Linux에서 검증할 수 있다.
-- subprocess 기반 `flashdb-crash-harness`가 KV crash recovery, KV sector-header corruption recovery, TSDB reboot/query, TSDB PRE_WRITE tail recovery, TSDB status mutation reboot, TSDB deleted-status reboot, TSDB clean/reset reboot까지 검증한다.
+- subprocess 기반 `flashdb-crash-harness`가 KV crash recovery, KV sector-header corruption recovery, TSDB reboot/query, TSDB PRE_WRITE tail recovery, TSDB corrupted-index tail recovery, TSDB status mutation reboot, TSDB deleted-status reboot, TSDB clean/reset reboot까지 검증한다.
 
-## 2. 이번 작업: plan 07 검증 방향을 Linux host 기준으로 전환
+## 2. 이번 작업: plan 07 다섯 번째 slice 중 TS corrupted-index tail reboot recovery 추가
 
-이번 작업의 목표는 plan 07 문서 집합에서 STM32F302 hardware smoke 방향을 폐기하고, 이미 강해진 Linux file-backed 검증 레이어를 canonical validation flow로 승격하는 것이었다.
-이번 작업에서 완료한 범위는 다음과 같다.
+이번 작업의 목표는 `docs/plans/07-testing-validation-and-rust-integration.md`의 남은 corruption scenario 확장 중 하나를 실제 코드와 subprocess crash harness에 반영하는 것이었다.
+이번 slice에서는 TSDB variable-blob 경로에서 “손상된 index tail이 남은 뒤 재부팅해도 이전 정상 레코드는 유지되고, 이후 fresh append가 다시 가능해야 한다”를 구현/검증했다.
 
-### 2.1 plan 문서의 validation 목표 재정렬
-다음 문서를 Linux host 중심으로 수정했다.
-- `docs/plans/07-testing-validation-and-rust-integration.md`
-- `docs/plans/00-top-down-roadmap.md`
-- `docs/plans/README.md`
+### 2.1 구현한 범위
+추가한 동작은 다음과 같다.
+- `tests/crash_scenarios.rs`
+  - `tsdb_process_restart_recovers_from_corrupted_index_tail` 신규 추가
+- `src/bin/flashdb-crash-harness.rs`
+  - `ts-inject-corrupted-index-tail` 명령 추가
+  - 현재 writable TS sector의 tail index slot에 out-of-bounds `log_addr`를 가진 손상 index를 주입하는 helper 추가
+- `src/tsdb/db.rs`
+  - mount-time sector scan에서 variable-mode TS corrupted tail index를 fatal error로 종료하지 않고 dead tail slot으로 건너뛰도록 보강
+  - iteration/query/status-lookup 경로에서도 같은 corrupted tail slot을 건너뛰도록 보강
 
-핵심 변경:
-- plan 07의 목표에서 hardware smoke 중심 표현을 제거
-- Layer 4를 `Linux host validation`으로 재정의
-- Phase 10을 `Linux host smoke/validation procedure`로 교체
-- 완료 기준도 `Linux host persistence/recovery validation 절차 문서화`로 변경
+핵심 결과:
+- reboot 뒤 기존 정상 timestamp `[10, 20]`는 계속 보인다.
+- 손상 index tail은 live record로 노출되지 않는다.
+- recovery 뒤 새 append가 성공하고 live record count도 다시 증가한다.
 
-### 2.2 Linux validation procedure 문서 신설
-새 문서 `docs/linux-validation-procedure.md`를 추가했다.
-
-이 문서는 다음을 canonical flow로 정의한다.
-- `cargo test`
-- `cargo test --features std`
-- `cargo test --features std --test crash_scenarios`
-- `bash scripts/run-crash-tests.sh`
-- `cargo run --manifest-path examples/linux/Cargo.toml --bin flashdb`
-- `bash scripts/verify-all.sh`
-
-즉, 이제 이 프로젝트의 기본 검증 축은 실제 보드 smoke가 아니라 Linux host에서 반복 가능한 persistence/recovery 검증이다.
-
-### 2.3 progress snapshot도 새 방향에 맞게 정리
-`docs/plans/progress.md`의 남은 작업 우선순위와 다음 세션 요약을 Linux host 기준으로 갱신했다.
-
-정리 결과:
-- Linux validation procedure 문서화는 완료됨
-- 남은 plan 07 핵심 작업은 추가 corruption scenarios와 regression catalog 문서화다
+### 2.2 이번 slice의 해석
+이번 작업은 plan 07의 corruption expansion 전체를 끝낸 것이 아니다.
+현재는 다음 중 한 조각만 완료했다.
+- 완료: TS corrupted index tail reboot recovery
+- 아직 남음: TS payload partial write 시나리오, TS sector-header corruption 시나리오, regression catalog 문서화
 
 ## 3. 기존 완료 상태 유지
 
@@ -74,81 +64,91 @@
 - `src/storage/file_sim.rs`의 std-only file-backed backend 유지
 - `examples/linux/src/bin/flashdb.rs`의 file-backed smoke example 유지
 - KV PRE_WRITE / CRC tail의 subprocess crash recovery test 유지
+- KV corrupted next-sector header recovery 유지
 - TSDB PRE_WRITE tail / reboot query / reboot append recovery 유지
-- TSDB status mutation reboot / clean reboot 유지
+- TSDB status mutation reboot / deleted-status reboot / clean reboot 유지
 
 즉, 현재 구조는
 - core: no_std + bounded no_alloc
 - host validation: std-only file-backed simulator + subprocess crash harness
-로 정리되어 있다.
+로 유지되며, 이번 작업으로 TSDB corruption regression coverage가 한 단계 더 넓어졌다.
 
 ## 4. 이번에 수정된 파일
 
 ### 코드
-- 이번 작업에서는 코드 변경 없음
+- `src/bin/flashdb-crash-harness.rs`
+- `src/tsdb/db.rs`
 
 ### 테스트
-- 이번 작업에서는 테스트 변경 없음
+- `tests/crash_scenarios.rs`
 
 ### 문서
-- `docs/plans/00-top-down-roadmap.md`
-- `docs/plans/README.md`
-- `docs/plans/07-testing-validation-and-rust-integration.md`
 - `docs/plans/progress.md`
-- `docs/linux-validation-procedure.md`
 
 ## 5. 검증 결과
 
-이번 작업은 문서 방향 전환 작업이라 코드/테스트 재실행 대신 문서 간 정합성을 맞추는 데 집중했다.
-확인한 내용:
-- `docs/plans/README.md`의 권장 실행 순서와 plan 07 설명이 Linux host validation 기준으로 정렬됨
-- `docs/plans/00-top-down-roadmap.md`의 상위 단계 설명도 같은 방향으로 정렬됨
-- `docs/plans/07-testing-validation-and-rust-integration.md`의 Layer/Phase/완료 기준이 Linux validation 기준으로 변경됨
-- `docs/linux-validation-procedure.md`가 canonical Linux 검증 절차를 제공함
+이번 작업은 TDD 순서로 진행했다.
 
-문서 정합성 확인:
-- `docs/plans/README.md`, `docs/plans/00-top-down-roadmap.md`, `docs/plans/07-testing-validation-and-rust-integration.md`가 모두 Linux host validation 기준으로 같은 방향을 가리키도록 맞췄다.
-- 새 `docs/linux-validation-procedure.md`가 progress.md의 다음 작업에서 요구하던 Linux validation procedure 역할을 실제로 채운다.
+1. 먼저 신규 crash scenario test를 추가했다.
+- `cargo test --features std --test crash_scenarios tsdb_process_restart_recovers_from_corrupted_index_tail -- --exact`
+- 초기에는 harness에 `ts-inject-corrupted-index-tail` 명령이 없어 실패했다.
+
+2. 이후 harness + TSDB recovery 로직을 구현했다.
+
+3. 구현 후 다음 검증을 모두 통과했다.
+- `cargo fmt`
+- `cargo test --features std --test crash_scenarios tsdb_process_restart_recovers_from_corrupted_index_tail -- --exact`
+- `bash scripts/run-crash-tests.sh`
+- `bash scripts/verify-all.sh`
+
+`bash scripts/verify-all.sh` 안에서 추가 확인된 항목:
+- `cargo fmt --check`
+- `cargo test`
+- `cargo test --features std`
+- `cargo run --manifest-path examples/linux/Cargo.toml --bin flashdb`
+- `cargo build --manifest-path examples/stm32f401re/Cargo.toml --bin flashdb --target thumbv7em-none-eabihf`
+- `cargo build --manifest-path examples/nrf5340/Cargo.toml --bin flashdb --target thumbv8m.main-none-eabihf`
 
 ## 6. upstream 비교 메모
 
 실제 참고한 upstream 근거:
 - `~/Desktop/FlashDB/tests/fdb_tsdb_tc.c`
-  - `test_fdb_tsl_set_status`
-  - `test_fdb_tsl_clean`
-  - reboot 뒤 `query_count`, `iter_by_time` 등을 다시 검증하는 흐름
-- `~/Desktop/FlashDB/tests/fdb_kvdb_tc.c`
-  - corrupted sector/reboot 이후에도 live record와 후속 write가 유지되는 recovery 패턴
-- `~/Desktop/FlashDB/src/fdb_file.c`
-  - host/file mode를 core 밖의 파일 기반 포팅 계층으로 유지하는 방식
+  - `fdb_reboot()` 기반으로 init/deinit 뒤 query/iter/status/clean semantics를 다시 확인하는 흐름
+- `~/Desktop/FlashDB/src/fdb_tsdb.c`
+  - `read_tsl(...)`로 TSL 상태를 읽고 `FDB_TSL_PRE_WRITE`를 무시하는 scan 흐름
+  - sector header magic / TS index의 `log_addr`를 storage metadata로 해석하는 구조
 
 비교 요약:
 - 공통점
-  - status mutation, clean/reset, reboot 뒤 query/iter semantics를 확인한다.
-  - host/file 기반 storage를 사용해 persistence와 corruption recovery를 검증한다.
+  - reboot 뒤에도 scan 결과가 이전 정상 record를 계속 가리켜야 한다는 철학은 같다.
+  - tail 쪽의 미완성/비정상 엔트리가 전체 mount를 무너뜨리면 안 된다는 복구 지향 흐름을 유지한다.
 - 차이점
-  - upstream C 테스트는 주로 같은 테스트 프로세스 안에서 init/deinit reboot simulation을 반복한다.
-  - 현재 Rust slice는 subprocess harness를 통해 file-backed 상태를 다른 프로세스가 다시 여는 방식으로 검증한다.
-  - 또한 TS status transition은 Rust 쪽에서 sequential flash programming을 명시적으로 수행해 reboot decode correctness를 확보했다.
+  - upstream C는 주로 같은 프로세스 안에서 reboot simulation을 반복한다.
+  - 현재 Rust 구현은 std file-backed backend + subprocess harness를 써서 실제 프로세스 경계를 넘는 reboot 회귀를 검증한다.
+  - 이번 slice의 corrupted index recovery는 upstream의 exact end-info / scanner 구현을 그대로 옮긴 것은 아니고, 현재 Rust 구조에 맞춰 variable-mode tail slot을 dead slot으로 건너뛰는 pragmatic recovery 방식이다.
 
-즉, upstream의 host reboot 검증 철학은 유지하면서도 Rust 쪽은 subprocess 경계를 드러내는 pragmatic regression harness와 status-transition 보정으로 현재 구조에 맞는 correctness-first 구현을 택했다.
+즉, upstream의 reboot recovery 철학은 따르되, 현재 Rust 구조에서는 corrupted variable tail index를 mount/iter/query에서 skip하는 방식으로 correctness-first 복구를 택했다.
 
 ## 7. 남은 차이점 / 후속 작업
 
 plan 07은 아직 전체 완료가 아니다. 현재 남은 핵심 항목은 다음과 같다.
 
-1. payload partial write / index corruption / sector-header corruption 추가 확대
+1. TS corruption scenario 추가 확대
 - 현재 subprocess crash regression은
   - KV PRE_WRITE tail
   - KV CRC mismatch tail
   - KV corrupted next-sector header
   - TSDB PRE_WRITE tail
+  - TSDB corrupted index tail
   - TSDB reboot 후 query/iteration
   - TSDB status mutation reboot
   - TSDB deleted-status reboot
   - TSDB clean/reset reboot
   까지 커버한다.
-- 이후 TS payload partial write, TS index corruption, TS sector-header corruption 같은 시나리오를 늘릴 수 있다.
+- 이후 남은 좋은 다음 조각은
+  - TS payload partial write
+  - TS sector-header corruption
+  같은 시나리오다.
 
 2. regression catalog 문서화
 - 어떤 버그/시나리오가 어떤 테스트 파일에 묶여 있는지 별도 카탈로그 문서가 있으면 다음 세션 연속성이 더 좋아진다.
@@ -157,11 +157,11 @@ plan 07은 아직 전체 완료가 아니다. 현재 남은 핵심 항목은 다
 ## 8. 다음 작업 우선순위
 
 가장 추천하는 다음 단계:
-1. plan 07 다섯 번째 slice
-   - TS payload partial write / TS index or sector-header corruption 같은 추가 corruption scenarios 확장
+1. plan 07 다섯 번째 slice 계속 진행
+   - TS sector-header corruption 또는 TS payload partial write subprocess scenario 추가
 2. 그 다음 regression catalog 정리
    - mock/file/Linux host validation 검증 레이어 차이와 실행 순서 문서화
 
 ## 9. 다음 세션 시작용 한 줄 요약
 
-- "plan 07의 crash/reboot 검증 축은 Linux host 기준으로 재정렬됐다. STM32F302 hardware smoke 방향은 폐기했고, `docs/linux-validation-procedure.md`가 canonical 검증 절차를 제공한다. 다음은 TS payload/index corruption 확장과 regression catalog 문서화다."
+- "plan 07 crash/reboot 검증에 TS corrupted-index tail reboot recovery가 추가됐다. std file-backed subprocess harness가 손상 tail을 dead slot으로 건너뛰고 정상 record 유지 + fresh append 재개를 검증한다. 다음은 TS sector-header corruption 또는 payload partial write, 그리고 regression catalog 문서화다."
