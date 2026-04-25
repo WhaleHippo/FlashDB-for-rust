@@ -56,7 +56,7 @@ FlashDB 계열 저장소는 아래를 반드시 검증해야 한다.
 - `tests/ts_query.rs`
 - `tests/crash_scenarios.rs`
 - `examples/kv_mock.rs`
-- `examples/linux/src/bin/flashdb.rs`
+- `examples/linux/src/main.rs`
 - 필요 시 `scripts/run-crash-tests.sh`
 
 ## 4. 세부 구현 단계
@@ -161,7 +161,7 @@ mock 요구사항:
 
 예상 예제:
 - `examples/kv_mock.rs`
-- `examples/linux/src/bin/flashdb.rs`
+- `examples/linux/src/main.rs`
 
 예제 내용 권장:
 - flash region 설정
@@ -179,7 +179,7 @@ mock 요구사항:
 - `cargo test --features std`
 - `cargo test --features std --test crash_scenarios`
 - `bash scripts/run-crash-tests.sh`
-- `cargo run --manifest-path examples/linux/Cargo.toml --bin flashdb`
+- `cargo run --manifest-path examples/linux/Cargo.toml`
 - 필요 시 file-backed simulator backing file을 지우고 fresh run / reboot run을 모두 확인
 
 ### Phase 11. 문서/검증 절차 정리

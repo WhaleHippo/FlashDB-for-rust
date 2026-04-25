@@ -23,6 +23,6 @@ fi
 )
 cargo test
 cargo test --features std
-cargo run --manifest-path examples/linux/Cargo.toml --bin flashdb
-cargo build --manifest-path examples/stm32f401re/Cargo.toml --bin flashdb --target thumbv7em-none-eabihf
-cargo build --manifest-path examples/nrf5340/Cargo.toml --bin flashdb --target thumbv8m.main-none-eabihf
+cargo run --manifest-path examples/linux/Cargo.toml
+cargo build --manifest-path examples/stm32f401re/Cargo.toml --target thumbv7em-none-eabihf
+cargo build --manifest-path examples/nrf5340/Cargo.toml --target thumbv8m.main-none-eabihf

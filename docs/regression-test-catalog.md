@@ -19,7 +19,7 @@
    - `cargo test --features std --test crash_scenarios`
    - `bash scripts/run-crash-tests.sh`
 4. Linux host smoke flow
-   - `cargo run --manifest-path examples/linux/Cargo.toml --bin flashdb`
+   - `cargo run --manifest-path examples/linux/Cargo.toml`
 5. 전체 canonical verification
    - `bash scripts/verify-all.sh`
 
@@ -164,7 +164,7 @@
 - 사용자가 실제로 따라 하는 host-side persistence 흐름을 smoke 수준으로 고정한다.
 
 주요 경로:
-- `examples/linux/src/bin/flashdb.rs`
+- `examples/linux/src/main.rs`
   - std feature + file-backed backend를 사용하는 host example
 - `docs/linux-validation-procedure.md`
   - canonical 실행 순서와 확인 포인트 문서
@@ -176,9 +176,9 @@
 - `src/`에 `extern crate alloc` / `alloc::` 잔존 여부 검사
 - `cargo test`
 - `cargo test --features std`
-- `cargo run --manifest-path examples/linux/Cargo.toml --bin flashdb`
-- `cargo build --manifest-path examples/stm32f401re/Cargo.toml --bin flashdb --target thumbv7em-none-eabihf`
-- `cargo build --manifest-path examples/nrf5340/Cargo.toml --bin flashdb --target thumbv8m.main-none-eabihf`
+- `cargo run --manifest-path examples/linux/Cargo.toml`
+- `cargo build --manifest-path examples/stm32f401re/Cargo.toml --target thumbv7em-none-eabihf`
+- `cargo build --manifest-path examples/nrf5340/Cargo.toml --target thumbv8m.main-none-eabihf`
 
 언제 우선 실행하나:
 - release 전 최종 확인
@@ -221,11 +221,11 @@
   - `bash scripts/run-crash-tests.sh`
 - 권장 마무리:
   - `cargo test --features std`
-  - `cargo run --manifest-path examples/linux/Cargo.toml --bin flashdb`
+  - `cargo run --manifest-path examples/linux/Cargo.toml`
 
 ### E. examples / docs / release-candidate 확인
 - 최소:
-  - `cargo run --manifest-path examples/linux/Cargo.toml --bin flashdb`
+  - `cargo run --manifest-path examples/linux/Cargo.toml`
 - 권장 마무리:
   - `bash scripts/verify-all.sh`
 
